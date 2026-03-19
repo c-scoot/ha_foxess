@@ -17,6 +17,7 @@ CONF_DEVICE_SNS: Final = "device_sns"
 PLATFORMS: Final[list[Platform]] = [
     Platform.SENSOR,
     Platform.NUMBER,
+    Platform.SELECT,
     Platform.SWITCH,
     Platform.TIME,
 ]
@@ -26,6 +27,7 @@ DEFAULT_SCAN_INTERVAL: Final = timedelta(minutes=5)
 REPORT_REFRESH_INTERVAL: Final = timedelta(minutes=5)
 DETAIL_REFRESH_INTERVAL: Final = timedelta(hours=6)
 SETTINGS_REFRESH_INTERVAL: Final = timedelta(hours=6)
+WORK_MODE_REFRESH_INTERVAL: Final = timedelta(minutes=5)
 REQUEST_TIMEOUT_SECONDS: Final = 30
 QUERY_REQUEST_MIN_INTERVAL_SECONDS: Final = 1.05
 UPDATE_REQUEST_MIN_INTERVAL_SECONDS: Final = 2.05
@@ -41,6 +43,7 @@ BATTERY_SOC_SET_PATH: Final = "/op/v0/device/battery/soc/set"
 FORCE_CHARGE_TIME_GET_PATH: Final = "/op/v0/device/battery/forceChargeTime/get"
 FORCE_CHARGE_TIME_SET_PATH: Final = "/op/v0/device/battery/forceChargeTime/set"
 DEVICE_SETTING_SET_PATH: Final = "/op/v0/device/setting/set"
+DEVICE_SETTING_GET_PATH: Final = "/op/v0/device/setting/get"
 
 REAUTH_ERRORS: Final = {41808, 41809}
 AUTH_ERRORS: Final = {41807, *REAUTH_ERRORS}
