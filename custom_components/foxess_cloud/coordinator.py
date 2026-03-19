@@ -28,6 +28,7 @@ from .const import (
     DETAIL_REFRESH_INTERVAL,
     REPORT_REFRESH_INTERVAL,
     SETTINGS_REFRESH_INTERVAL,
+    WORK_MODE_REFRESH_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ class FoxESSCoordinatorData:
     report: dict[str, dict[str, Any]]
     battery_settings: FoxESSBatterySocSettings | None
     charge_time_settings: FoxESSChargeTimeSettings | None
+    work_mode: str | None
     requested_at: datetime
 
 
@@ -73,6 +75,8 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         self._battery_settings: FoxESSBatterySocSettings | None = None
         self._charge_time_settings: FoxESSChargeTimeSettings | None = None
         self._settings_fetched_at: datetime | None = None
+        self._work_mode: str | None = None
+        self._work_mode_fetched_at: datetime | None = None
 
     async def _async_update_data(self) -> FoxESSCoordinatorData:
         now = dt_util.utcnow()
@@ -112,6 +116,11 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
                 or now - self._settings_fetched_at >= SETTINGS_REFRESH_INTERVAL
             ):
                 await self._async_refresh_control_settings(now)
+            if (
+                self._work_mode_fetched_at is None
+                or now - self._work_mode_fetched_at >= WORK_MODE_REFRESH_INTERVAL
+            ):
+                await self._async_refresh_work_mode(now)
         except FoxESSAuthenticationError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except FoxESSRateLimitError as err:
@@ -125,6 +134,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             report=self._report,
             battery_settings=self._battery_settings,
             charge_time_settings=self._charge_time_settings,
+            work_mode=self._work_mode,
             requested_at=now,
         )
 
@@ -143,6 +153,15 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             self._charge_time_settings = None
 
         self._settings_fetched_at = now or dt_util.utcnow()
+
+    async def _async_refresh_work_mode(self, now: datetime | None = None) -> None:
+        """Refresh the current work mode more frequently than other settings."""
+        try:
+            self._work_mode = await self.api.async_get_work_mode(self.device_sn)
+        except FoxESSApiError as err:
+            _LOGGER.debug("Work mode unavailable for %s: %s", self.device_sn, err)
+            self._work_mode = self._work_mode
+        self._work_mode_fetched_at = now or dt_util.utcnow()
 
     async def async_set_battery_soc_settings(
         self,
@@ -165,11 +184,11 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         await self._async_refresh_control_settings()
         self.async_update_listeners()
 
-    async def async_set_charge_period_enabled(self, period: int, enabled: bool) -> None:
-        """Enable or disable a force-charge time period."""
+    async def async_set_charge_from_grid(self, period: int, enabled: bool) -> None:
+        """Enable or disable charging from grid for a force-charge time period."""
         await self.async_set_charge_period(
             period,
-            enabled=enabled,
+            charge_from_grid=enabled,
         )
 
     async def async_set_charge_period_time(
@@ -188,7 +207,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         self,
         period: int,
         *,
-        enabled: bool | None = None,
+        charge_from_grid: bool | None = None,
         start: dt_time | None = None,
         end: dt_time | None = None,
     ) -> None:
@@ -200,8 +219,8 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             raise UpdateFailed("Charge time settings are not available for this inverter")
 
         target = settings.period_1 if period == 1 else settings.period_2
-        if enabled is not None:
-            target.enabled = enabled
+        if charge_from_grid is not None:
+            target.charge_from_grid = charge_from_grid
         if start is not None:
             target.start = start
         if end is not None:
@@ -219,12 +238,12 @@ def _copy_charge_settings(
         return None
     return FoxESSChargeTimeSettings(
         period_1=FoxESSChargePeriod(
-            enabled=settings.period_1.enabled,
+            charge_from_grid=settings.period_1.charge_from_grid,
             start=settings.period_1.start,
             end=settings.period_1.end,
         ),
         period_2=FoxESSChargePeriod(
-            enabled=settings.period_2.enabled,
+            charge_from_grid=settings.period_2.charge_from_grid,
             start=settings.period_2.start,
             end=settings.period_2.end,
         ),

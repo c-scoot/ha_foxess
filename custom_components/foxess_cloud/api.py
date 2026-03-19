@@ -22,6 +22,7 @@ from .const import (
     DETAIL_V0_PATH,
     DETAIL_V1_PATH,
     DEVICE_LIST_PATH,
+    DEVICE_SETTING_GET_PATH,
     DEVICE_SETTING_SET_PATH,
     FORCE_CHARGE_TIME_GET_PATH,
     FORCE_CHARGE_TIME_SET_PATH,
@@ -82,7 +83,7 @@ class FoxESSBatterySocSettings:
 class FoxESSChargePeriod:
     """A single force-charge time period."""
 
-    enabled: bool
+    charge_from_grid: bool
     start: dt_time
     end: dt_time
 
@@ -497,12 +498,12 @@ class FoxESSApiClient:
             return None
         return FoxESSChargeTimeSettings(
             period_1=FoxESSChargePeriod(
-                enabled=bool(result.get("enable1")),
+                charge_from_grid=_coerce_boolish(result.get("enable1")),
                 start=_extract_time(result.get("startTime1")),
                 end=_extract_time(result.get("endTime1")),
             ),
             period_2=FoxESSChargePeriod(
-                enabled=bool(result.get("enable2")),
+                charge_from_grid=_coerce_boolish(result.get("enable2")),
                 start=_extract_time(result.get("startTime2")),
                 end=_extract_time(result.get("endTime2")),
             ),
@@ -519,8 +520,8 @@ class FoxESSApiClient:
             FORCE_CHARGE_TIME_SET_PATH,
             payload={
                 "sn": device_sn,
-                "enable1": settings.period_1.enabled,
-                "enable2": settings.period_2.enabled,
+                "enable1": int(settings.period_1.charge_from_grid),
+                "enable2": int(settings.period_2.charge_from_grid),
                 "startTime1": _time_to_payload(settings.period_1.start),
                 "endTime1": _time_to_payload(settings.period_1.end),
                 "startTime2": _time_to_payload(settings.period_2.start),
@@ -535,6 +536,59 @@ class FoxESSApiClient:
             DEVICE_SETTING_SET_PATH,
             payload={"sn": device_sn, "key": key, "value": value},
         )
+
+    async def async_get_device_setting(self, device_sn: str, key: str) -> Any:
+        """Read a device setting by key, if the inverter exposes it."""
+        requests: tuple[tuple[str, dict[str, Any] | None, dict[str, Any] | None], ...] = (
+            ("GET", None, {"sn": device_sn, "key": key}),
+            ("POST", {"sn": device_sn, "key": key}, None),
+        )
+        last_error: FoxESSApiError | None = None
+
+        for method, payload, params in requests:
+            try:
+                data = await self._request(method, DEVICE_SETTING_GET_PATH, payload=payload, params=params)
+            except FoxESSApiError as err:
+                last_error = err
+                continue
+
+            result = data.get("result")
+            if isinstance(result, dict):
+                for candidate_key in ("value", "currentValue", "settingValue"):
+                    if candidate_key in result:
+                        return result[candidate_key]
+            if result is not None:
+                return result
+            return None
+
+        raise last_error or FoxESSApiError(f"Unable to read device setting: {key}")
+
+    async def async_set_work_mode(self, device_sn: str, option_key: str) -> str:
+        """Set the inverter work mode using the most likely FoxESS payload values."""
+        candidates = {
+            "self_use": ("SelfUse", "SelfUseMode"),
+            "mode_scheduler": ("ModeScheduler", "Scheduler", "TimeMode"),
+        }.get(option_key)
+        if candidates is None:
+            raise FoxESSApiError(f"Unsupported work mode option: {option_key}")
+
+        last_error: FoxESSApiError | None = None
+        for candidate in candidates:
+            try:
+                await self.async_set_device_setting(device_sn, "WorkMode", candidate)
+            except FoxESSApiError as err:
+                last_error = err
+                continue
+            return candidate
+
+        raise last_error or FoxESSApiError(f"Unable to set work mode: {option_key}")
+
+    async def async_get_work_mode(self, device_sn: str) -> str | None:
+        """Return the current inverter work mode, if exposed."""
+        value = await self.async_get_device_setting(device_sn, "WorkMode")
+        if value is None:
+            return None
+        return str(value)
 
 
 def normalize_key(key: str) -> str:
@@ -600,7 +654,7 @@ def prettify_key(key: str) -> str:
         "meterPower2": "Meter 2 Power",
         "residualEnergy": "Residual Energy",
         "minSoc": "Minimum SOC",
-        "minSocOnGrid": "Minimum SOC On Grid",
+        "minSocOnGrid": "Cut-Off SOC",
         "runningState": "Running State",
         "powerFactor": "Power Factor",
         "ambientTemp": "Ambient Temperature",
@@ -642,6 +696,22 @@ def _coerce_value(value: Any) -> Any:
         except ValueError:
             return value
     return value
+
+
+def _coerce_boolish(value: Any) -> bool:
+    """Convert FoxESS 0/1-style values to bool."""
+    coerced = _coerce_value(value)
+    if isinstance(coerced, bool):
+        return coerced
+    if isinstance(coerced, (int, float)):
+        return coerced != 0
+    if isinstance(coerced, str):
+        normalized = coerced.strip().lower()
+        if normalized in {"true", "on", "yes"}:
+            return True
+        if normalized in {"false", "off", "no", ""}:
+            return False
+    return bool(coerced)
 
 
 def _select_device_result_block(result: Any, device_sn: str) -> dict[str, Any]:

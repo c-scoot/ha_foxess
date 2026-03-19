@@ -92,17 +92,17 @@ def _register_services(hass: HomeAssistant) -> None:
 
     async def async_handle_set_charge_periods(call: ServiceCall) -> None:
         coordinator = _find_coordinator(hass, call.data["device_sn"])
-        if any(key in call.data for key in ("enable1", "start_time1", "end_time1")):
+        if any(key in call.data for key in ("charge_from_grid1", "start_time1", "end_time1")):
             await coordinator.async_set_charge_period(
                 1,
-                enabled=call.data.get("enable1"),
+                charge_from_grid=call.data.get("charge_from_grid1"),
                 start=call.data.get("start_time1"),
                 end=call.data.get("end_time1"),
             )
-        if any(key in call.data for key in ("enable2", "start_time2", "end_time2")):
+        if any(key in call.data for key in ("charge_from_grid2", "start_time2", "end_time2")):
             await coordinator.async_set_charge_period(
                 2,
-                enabled=call.data.get("enable2"),
+                charge_from_grid=call.data.get("charge_from_grid2"),
                 start=call.data.get("start_time2"),
                 end=call.data.get("end_time2"),
             )
@@ -140,10 +140,10 @@ def _register_services(hass: HomeAssistant) -> None:
         schema=vol.Schema(
             {
                 vol.Required("device_sn"): cv.string,
-                vol.Optional("enable1"): cv.boolean,
+                vol.Optional("charge_from_grid1"): cv.boolean,
                 vol.Optional("start_time1"): cv.time,
                 vol.Optional("end_time1"): cv.time,
-                vol.Optional("enable2"): cv.boolean,
+                vol.Optional("charge_from_grid2"): cv.boolean,
                 vol.Optional("start_time2"): cv.time,
                 vol.Optional("end_time2"): cv.time,
             }
