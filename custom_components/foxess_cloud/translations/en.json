@@ -1,0 +1,25 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up FoxESS Cloud",
+        "description": "Enter your FoxESS API key. The integration will discover all inverters available to that account.",
+        "data": {
+          "api_key": "API key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the FoxESS API.",
+      "device_not_found": "The serial number was not found for this API key.",
+      "invalid_auth": "The API key was rejected by FoxESS.",
+      "invalid_request": "FoxESS rejected the request format or headers. Update the integration and try again.",
+      "multiple_devices": "More than one device was found. Enter the device serial number and submit again.",
+      "no_devices": "No FoxESS devices were returned for this API key."
+    },
+    "abort": {
+      "already_configured": "This FoxESS inverter is already configured.",
+      "already_configured_account": "This FoxESS account is already configured."
+    }
+  }
+}

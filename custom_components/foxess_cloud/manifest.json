@@ -1,0 +1,15 @@
+{
+  "domain": "foxess_cloud",
+  "name": "FoxESS Cloud",
+  "codeowners": [
+    "@c-scoot"
+  ],
+  "config_flow": true,
+  "integration_type": "device",
+  "iot_class": "cloud_polling",
+  "loggers": [
+    "custom_components.foxess_cloud"
+  ],
+  "requirements": [],
+  "version": "0.0.1"
+}
