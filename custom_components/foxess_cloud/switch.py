@@ -26,14 +26,14 @@ SWITCH_DESCRIPTIONS: tuple[FoxESSSwitchDescription, ...] = (
     FoxESSSwitchDescription(
         key="charge_period_1_enabled",
         period=1,
-        name="Force Charge Period 1",
-        icon="mdi:battery-clock",
+        name="Charge From Grid Period 1",
+        icon="mdi:transmission-tower-import",
     ),
     FoxESSSwitchDescription(
         key="charge_period_2_enabled",
         period=2,
-        name="Force Charge Period 2",
-        icon="mdi:battery-clock-outline",
+        name="Charge From Grid Period 2",
+        icon="mdi:transmission-tower-import",
     ),
 )
 
@@ -57,7 +57,7 @@ class FoxESSChargePeriodSwitch(
     CoordinatorEntity[FoxESSDataUpdateCoordinator],
     SwitchEntity,
 ):
-    """A force-charge enable switch."""
+    """A charge-from-grid switch for a force-charge time period."""
 
     entity_description: FoxESSSwitchDescription
     _attr_has_entity_name = True
@@ -83,10 +83,10 @@ class FoxESSChargePeriodSwitch(
         if settings is None:
             return None
         period = settings.period_1 if self.entity_description.period == 1 else settings.period_2
-        return period.enabled
+        return period.charge_from_grid
 
     async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.async_set_charge_period_enabled(self.entity_description.period, True)
+        await self.coordinator.async_set_charge_from_grid(self.entity_description.period, True)
 
     async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.async_set_charge_period_enabled(self.entity_description.period, False)
+        await self.coordinator.async_set_charge_from_grid(self.entity_description.period, False)
