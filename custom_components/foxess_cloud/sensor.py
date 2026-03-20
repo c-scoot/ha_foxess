@@ -453,6 +453,7 @@ def _build_entities_for_coordinator(
 ) -> list[SensorEntity]:
     entities: list[SensorEntity] = []
     entities.append(FoxESSSchedulerSensor(coordinator))
+    entities.append(FoxESSGridNetPowerSensor(coordinator))
 
     for description in KNOWN_REALTIME_DESCRIPTIONS.values():
         entities.append(FoxESSOpenAPISensor(coordinator, description))
@@ -546,6 +547,45 @@ class FoxESSSchedulerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sens
                 attributes["available_work_modes"] = work_mode.get("enumList")
 
         return attributes
+
+
+class FoxESSGridNetPowerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
+    """Derived net grid power where import is positive and export is negative."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Grid Net Power"
+    _attr_icon = "mdi:transmission-tower"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_sn}_grid_net_power"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def native_value(self) -> float | None:
+        import_power = _coerce_power_value(
+            self.coordinator.data.realtime.get("gridConsumptionPower", {}).get("value")
+        )
+        export_power = _coerce_power_value(
+            self.coordinator.data.realtime.get("feedinPower", {}).get("value")
+        )
+
+        if import_power is None and export_power is None:
+            return None
+
+        return (import_power or 0.0) - (export_power or 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "positive_direction": "importing_from_grid",
+            "negative_direction": "exporting_to_grid",
+            "import_source": "gridConsumptionPower",
+            "export_source": "feedinPower",
+        }
 
 
 class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
@@ -739,6 +779,16 @@ def _build_pv_string_energy_name(source_key: str) -> str:
     if source_name.endswith(" Power"):
         source_name = source_name.removesuffix(" Power")
     return f"{source_name} Generated Energy"
+
+
+def _coerce_power_value(value: Any) -> float | None:
+    """Convert a power value to float when available."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_dynamic_realtime_description(
