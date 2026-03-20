@@ -452,6 +452,7 @@ def _build_entities_for_coordinator(
     coordinator: FoxESSDataUpdateCoordinator,
 ) -> list[SensorEntity]:
     entities: list[SensorEntity] = []
+    entities.append(FoxESSSchedulerSensor(coordinator))
 
     for description in KNOWN_REALTIME_DESCRIPTIONS.values():
         entities.append(FoxESSOpenAPISensor(coordinator, description))
@@ -483,6 +484,68 @@ def _build_entities_for_coordinator(
             entities.append(FoxESSPVStringEnergySensor(coordinator, raw_key))
 
     return entities
+
+
+class FoxESSSchedulerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
+    """Read-only summary of the current FoxESS scheduler configuration."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Scheduler"
+    _attr_icon = "mdi:calendar-clock"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_sn}_scheduler"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and (
+                self.coordinator.data.scheduler_supported is not None
+                or self.coordinator.data.scheduler_snapshot is not None
+            )
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        enabled = self.coordinator.data.scheduler_enabled
+        if enabled is True:
+            return "enabled"
+        if enabled is False:
+            return "disabled"
+        if self.coordinator.data.scheduler_supported is False:
+            return "unsupported"
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        snapshot = self.coordinator.data.scheduler_snapshot
+        attributes: dict[str, Any] = {
+            "scheduler_supported": self.coordinator.data.scheduler_supported,
+        }
+        if snapshot is None:
+            return attributes
+
+        result = snapshot.get("result")
+        groups = result.get("groups") if isinstance(result, dict) else None
+        properties = result.get("properties") if isinstance(result, dict) else None
+
+        attributes["api_version"] = snapshot.get("version")
+        if isinstance(result, dict):
+            attributes["max_group_count"] = result.get("maxGroupCount")
+            attributes["schedule_enabled"] = bool(result.get("enable")) if "enable" in result else None
+        if isinstance(groups, list):
+            attributes["group_count"] = len(groups)
+            attributes["groups"] = groups
+        if isinstance(properties, dict):
+            work_mode = properties.get("workmode")
+            if isinstance(work_mode, dict):
+                attributes["available_work_modes"] = work_mode.get("enumList")
+
+        return attributes
 
 
 class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):

@@ -5,51 +5,21 @@ set_min_soc:
       selector:
         text:
     min_soc:
+      name: System Minimum SOC
+      description: FoxESS `minSoc`. The system-wide minimum battery reserve.
       selector:
         number:
           min: 0
           max: 100
           mode: box
     min_soc_on_grid:
-      name: Cut-Off SOC
-      description: FoxESS minimum battery SOC while grid-connected.
+      name: Battery Cut-Off SOC
+      description: FoxESS `minSocOnGrid`. The battery reserve used while grid-connected.
       selector:
         number:
           min: 0
           max: 100
           mode: box
-set_charge_periods:
-  fields:
-    device_sn:
-      required: true
-      selector:
-        text:
-    charge_from_grid1:
-      name: Enable Force Charge Window 1
-      description: Arm force-charge window 1 so grid charging is allowed during that time range.
-      selector:
-        boolean:
-    start_time1:
-      name: Force Charge Window 1 Start
-      selector:
-        time:
-    end_time1:
-      name: Force Charge Window 1 End
-      selector:
-        time:
-    charge_from_grid2:
-      name: Enable Force Charge Window 2
-      description: Arm force-charge window 2 so grid charging is allowed during that time range.
-      selector:
-        boolean:
-    start_time2:
-      name: Force Charge Window 2 Start
-      selector:
-        time:
-    end_time2:
-      name: Force Charge Window 2 End
-      selector:
-        time:
 set_device_setting:
   fields:
     device_sn:

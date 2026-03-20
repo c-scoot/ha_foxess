@@ -46,6 +46,7 @@ class FoxESSCoordinatorData:
     work_mode: str | None
     scheduler_enabled: bool | None
     scheduler_supported: bool | None
+    scheduler_snapshot: dict[str, Any] | None
     requested_at: datetime
 
 
@@ -80,6 +81,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         self._work_mode: str | None = None
         self._scheduler_enabled: bool | None = None
         self._scheduler_supported: bool | None = None
+        self._scheduler_snapshot: dict[str, Any] | None = None
         self._work_mode_fetched_at: datetime | None = None
 
     async def _async_update_data(self) -> FoxESSCoordinatorData:
@@ -141,6 +143,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             work_mode=self._work_mode,
             scheduler_enabled=self._scheduler_enabled,
             scheduler_supported=self._scheduler_supported,
+            scheduler_snapshot=self._scheduler_snapshot,
             requested_at=now,
         )
 
@@ -168,6 +171,11 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             self._scheduler_supported = scheduler_flag.get("support")
         except FoxESSApiError as err:
             _LOGGER.debug("Scheduler flag unavailable for %s: %s", self.device_sn, err)
+
+        try:
+            self._scheduler_snapshot = await self.api.async_get_scheduler(self.device_sn)
+        except FoxESSApiError as err:
+            _LOGGER.debug("Scheduler snapshot unavailable for %s: %s", self.device_sn, err)
 
         try:
             self._work_mode = await self.api.async_get_work_mode(self.device_sn)

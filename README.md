@@ -103,33 +103,27 @@ The integration uses the request shapes documented in the official Open API:
 
 When supported by your inverter, the integration exposes:
 
-- `number` entities for `Minimum SOC` and `Cut-Off SOC`
+- `number` entities for `System Minimum SOC` and `Battery Cut-Off SOC`
 - `select` entity for `Work Mode`, limited to `Self-use` and `Mode Scheduler`
-- `switch` entities for `Enable Force Charge Window 1` and `Enable Force Charge Window 2`
-- `time` entities to edit the start/end time for each force-charge window
+- diagnostic `sensor` entity for `Scheduler`, showing the current scheduler flag, groups, and available work-mode enums as read-only attributes
 
-The force-charge controls map to FoxESS' basic battery charge-period settings:
+- `System Minimum SOC` maps to FoxESS `minSoc`, the system-wide minimum reserve.
+- `Battery Cut-Off SOC` maps to FoxESS `minSocOnGrid`, the battery reserve used while grid-connected.
 
-- `Enable Force Charge Window X` arms that window, meaning the inverter is allowed to draw from the grid during it.
-- `Force Charge Window X Start` and `End` define the time window for that period.
-- `Cut-Off SOC` is the FoxESS grid-connected battery reserve value returned by the API as `minSocOnGrid`.
-
-These controls are not the same thing as FoxCloud 2.0 `Mode Scheduler`. The official FoxCloud 2.0 app manual describes `Mode Scheduler` as a separate feature and notes that battery quick settings cannot be changed while `Mode Scheduler` is enabled. This integration currently manages the battery charge-period settings exposed by the Open API, not the full Mode Scheduler schedule editor.
-
-In practice, FoxESS behavior appears to vary by inverter model and firmware. If your charge windows do not take effect immediately, check the active work mode in FoxESS and verify the corresponding `Enable Force Charge Window` switch is on.
+The older Open API force-charge window controls are intentionally no longer exposed in Home Assistant, because on newer FoxESS models they are superseded by the full FoxCloud `Mode Scheduler`.
 
 For the `0.1.0` release, the intended workflow is:
 
 - configure your actual scheduler periods in the FoxESS app
-- use the Home Assistant `Work Mode` select to switch between `Self-use` and `Mode Scheduler` when your inverter exposes the `WorkMode` setting through the API
+- use the Home Assistant `Work Mode` select to switch between `Self-use` and `Mode Scheduler`
 
 This keeps Home Assistant focused on arming or disarming the scheduler without trying to replicate FoxESS' full schedule editor.
 For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler switch-status API rather than by writing `WorkMode=Scheduler`, so the Home Assistant select now enables or disables the scheduler directly and uses `WorkMode` only as supporting context.
+The `Scheduler` sensor is intentionally read-only for now and exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
 
 Advanced users can also call Home Assistant services:
 
 - `foxess_cloud.set_min_soc`
-- `foxess_cloud.set_charge_periods`
 - `foxess_cloud.set_device_setting`
 - `foxess_cloud.probe_work_mode` to log any mode-like detail/realtime fields plus read attempts for likely work-mode setting keys
 - `foxess_cloud.probe_scheduler` to log the scheduler flag status and current schedule groups from the scheduler API

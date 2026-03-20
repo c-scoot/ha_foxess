@@ -27,7 +27,7 @@ NUMBER_DESCRIPTIONS: tuple[FoxESSNumberDescription, ...] = (
     FoxESSNumberDescription(
         key="min_soc",
         key_name="min_soc",
-        name="Minimum SOC",
+        name="System Minimum SOC",
         native_min_value=0,
         native_max_value=100,
         native_step=1,
@@ -37,7 +37,7 @@ NUMBER_DESCRIPTIONS: tuple[FoxESSNumberDescription, ...] = (
     FoxESSNumberDescription(
         key="min_soc_on_grid",
         key_name="min_soc_on_grid",
-        name="Cut-Off SOC",
+        name="Battery Cut-Off SOC",
         native_min_value=0,
         native_max_value=100,
         native_step=1,
