@@ -107,6 +107,7 @@ When supported by your inverter, the integration exposes:
 - `select` entity for `Work Mode`, limited to `Self-use` and `Mode Scheduler`
 - `sensor` entities for native net power, including `Battery Net Power`, `Grid Net Power`, and `Non-EPS Load Power`
 - read-only `sensor` entity for `Schedule Status`, showing the current scheduler flag, groups, and available work-mode enums as attributes
+- diagnostic `sensor` entity for `API Calls Today`, disabled by default and reset daily
 
 - `System Minimum SOC` maps to FoxESS `minSoc`, the system-wide minimum reserve.
 - `Battery Cut-Off SOC` maps to FoxESS `minSocOnGrid`, the battery reserve used while grid-connected.
@@ -123,6 +124,7 @@ For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler sw
 The `Schedule Status` sensor is intentionally read-only for now and exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
 For dashboards and statistics, prefer the native `Battery Net Power` and `Grid Net Power` sensors over helper-created net-power entities, because the native sensors keep a stable unit definition in the integration.
 `Non-EPS Load Power` is derived as `Load Power - EPS Power`, which matches the FoxESS split between total load, EPS-backed load, and the remainder that is not on the EPS output.
+`API Calls Today` counts outbound FoxESS requests for that inverter, resets on the integration side each local day, and is intended as a disabled-by-default diagnostic sensor rather than a primary dashboard entity.
 
 Advanced users can also call the Home Assistant service:
 

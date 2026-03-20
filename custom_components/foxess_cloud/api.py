@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import date, time as dt_time
+from datetime import date, datetime, time as dt_time
 import hashlib
 import logging
 import re
@@ -13,6 +13,7 @@ from typing import Any
 
 import aiohttp
 import async_timeout
+from homeassistant.util import dt as dt_util
 
 from .const import (
     API_BASE_URL,
@@ -109,6 +110,17 @@ class FoxESSChargeTimeSettings:
     period_2: FoxESSChargePeriod
 
 
+@dataclass(slots=True)
+class FoxESSApiUsageStats:
+    """Per-device daily API usage counters."""
+
+    day: date
+    calls: int = 0
+    errors: int = 0
+    last_called_at: datetime | None = None
+    last_error_at: datetime | None = None
+
+
 class FoxESSApiClient:
     """Wrapper around the FoxESS Cloud API."""
 
@@ -125,6 +137,7 @@ class FoxESSApiClient:
         self._use_detail_v1 = True
         self._path_locks: dict[str, asyncio.Lock] = {}
         self._last_request_started: dict[str, float] = {}
+        self._usage_by_device: dict[str, FoxESSApiUsageStats] = {}
 
     def _headers(self, path: str) -> dict[str, str]:
         timestamp = str(int(time.time() * 1000))
@@ -152,6 +165,8 @@ class FoxESSApiClient:
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
         await self._async_wait_for_rate_limit(path, method)
+        device_sn = _extract_device_sn(payload, params)
+        self._record_request(device_sn)
         _LOGGER.debug(
             "FoxESS request %s %s payload=%s params=%s",
             method,
@@ -170,8 +185,10 @@ class FoxESSApiClient:
                     params=params,
                 )
         except TimeoutError as err:
+            self._record_request_error(device_sn)
             raise FoxESSApiError("Timed out contacting FoxESS") from err
         except aiohttp.ClientError as err:
+            self._record_request_error(device_sn)
             raise FoxESSApiError("Unable to connect to FoxESS") from err
 
         try:
@@ -193,6 +210,7 @@ class FoxESSApiClient:
         )
 
         if response.status >= 400:
+            self._record_request_error(device_sn)
             _LOGGER.warning(
                 "FoxESS HTTP error on %s %s: status=%s msg=%s payload=%s params=%s",
                 method,
@@ -208,6 +226,7 @@ class FoxESSApiClient:
 
         errno = data.get("errno", 0)
         if errno in AUTH_ERRORS:
+            self._record_request_error(device_sn)
             _LOGGER.warning(
                 "FoxESS auth error on %s %s: errno=%s msg=%s payload=%s params=%s",
                 method,
@@ -219,6 +238,7 @@ class FoxESSApiClient:
             )
             raise FoxESSAuthenticationError(data.get("msg", "Authentication failed"), errno)
         if errno in REQUEST_ERRORS:
+            self._record_request_error(device_sn)
             log_fn = _LOGGER.warning if log_request_errors else _LOGGER.debug
             log_fn(
                 "FoxESS request error on %s %s: errno=%s msg=%s payload=%s params=%s",
@@ -234,6 +254,7 @@ class FoxESSApiClient:
                 errno,
             )
         if errno in RATE_LIMIT_ERRORS:
+            self._record_request_error(device_sn)
             _LOGGER.warning(
                 "FoxESS rate limit on %s %s: errno=%s msg=%s",
                 method,
@@ -255,6 +276,35 @@ class FoxESSApiClient:
             raise FoxESSApiError(data.get("msg", "FoxESS API error"), errno)
 
         return data
+
+    def get_daily_usage(self, device_sn: str) -> FoxESSApiUsageStats:
+        """Return today's per-device API usage counters."""
+        return self._get_usage_bucket(device_sn)
+
+    def _record_request(self, device_sn: str | None) -> None:
+        """Record an outbound FoxESS request for a device, if identifiable."""
+        if device_sn is None:
+            return
+        usage = self._get_usage_bucket(device_sn)
+        usage.calls += 1
+        usage.last_called_at = dt_util.now()
+
+    def _record_request_error(self, device_sn: str | None) -> None:
+        """Record a failed FoxESS request for a device, if identifiable."""
+        if device_sn is None:
+            return
+        usage = self._get_usage_bucket(device_sn)
+        usage.errors += 1
+        usage.last_error_at = dt_util.now()
+
+    def _get_usage_bucket(self, device_sn: str) -> FoxESSApiUsageStats:
+        """Return the counter bucket for the current local day."""
+        today = dt_util.now().date()
+        usage = self._usage_by_device.get(device_sn)
+        if usage is None or usage.day != today:
+            usage = FoxESSApiUsageStats(day=today)
+            self._usage_by_device[device_sn] = usage
+        return usage
 
     async def _async_wait_for_rate_limit(self, path: str, method: str) -> None:
         """Honor FoxESS's per-interface rate limits."""
@@ -954,3 +1004,24 @@ def _sanitize_mapping(mapping: dict[str, Any] | None) -> dict[str, Any] | None:
         else:
             redacted[key] = value
     return redacted
+
+
+def _extract_device_sn(
+    payload: dict[str, Any] | None,
+    params: dict[str, Any] | None,
+) -> str | None:
+    """Extract a single device serial number from common FoxESS request shapes."""
+    for mapping in (payload, params):
+        if not isinstance(mapping, dict):
+            continue
+
+        for key in ("sn", "deviceSN", "deviceSn"):
+            value = mapping.get(key)
+            if isinstance(value, str) and value:
+                return value
+
+        sns = mapping.get("sns")
+        if isinstance(sns, list) and len(sns) == 1 and isinstance(sns[0], str) and sns[0]:
+            return sns[0]
+
+    return None

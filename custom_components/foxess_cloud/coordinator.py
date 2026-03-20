@@ -22,6 +22,7 @@ from .api import (
     FoxESSChargeTimeSettings,
     FoxESSDevice,
     FoxESSRateLimitError,
+    FoxESSApiUsageStats,
 )
 from .const import (
     DEFAULT_SCAN_INTERVAL,
@@ -47,6 +48,7 @@ class FoxESSCoordinatorData:
     scheduler_enabled: bool | None
     scheduler_supported: bool | None
     scheduler_snapshot: dict[str, Any] | None
+    api_usage: FoxESSApiUsageStats
     requested_at: datetime
 
 
@@ -144,6 +146,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             scheduler_enabled=self._scheduler_enabled,
             scheduler_supported=self._scheduler_supported,
             scheduler_snapshot=self._scheduler_snapshot,
+            api_usage=self.api.get_daily_usage(self.device_sn),
             requested_at=now,
         )
 

@@ -466,6 +466,7 @@ def _build_entities_for_coordinator(
 ) -> list[SensorEntity]:
     entities: list[SensorEntity] = []
     entities.append(FoxESSSchedulerSensor(coordinator))
+    entities.append(FoxESSAPICallsTodaySensor(coordinator))
     entities.append(FoxESSGridNetPowerSensor(coordinator))
     entities.append(FoxESSNonEPSLoadPowerSensor(coordinator))
 
@@ -599,6 +600,36 @@ class FoxESSGridNetPowerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], S
             "negative_direction": "exporting_to_grid",
             "import_source": "gridConsumptionPower",
             "export_source": "feedinPower",
+        }
+
+
+class FoxESSAPICallsTodaySensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
+    """Daily FoxESS API request counter for this inverter."""
+
+    _attr_has_entity_name = True
+    _attr_name = "API Calls Today"
+    _attr_icon = "mdi:counter"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_sn}_api_calls_today"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def native_value(self) -> int:
+        return self.coordinator.data.api_usage.calls
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        usage = self.coordinator.data.api_usage
+        return {
+            "date": usage.day.isoformat(),
+            "successful_calls": usage.calls - usage.errors,
+            "api_errors_today": usage.errors,
+            "last_api_call": usage.last_called_at,
+            "last_api_error": usage.last_error_at,
         }
 
 
