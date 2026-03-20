@@ -36,6 +36,19 @@ from .const import DOMAIN
 from .coordinator import FoxESSDataUpdateCoordinator
 
 _PV_STRING_POWER_KEY_PATTERN = re.compile(r"^pv_(\d+)_power$")
+_RUNNING_STATE_LABELS: dict[int, str] = {
+    160: "Self-Test",
+    161: "Waiting",
+    162: "Checking",
+    163: "On-Grid",
+    164: "Off-Grid",
+    165: "Fault",
+    166: "Permanent Fault",
+    167: "Standby",
+    168: "Upgrading",
+    169: "FCT",
+    170: "Illegal",
+}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -624,7 +637,10 @@ class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sensor
         item = source_data.get(description.value_key)
         if item is None:
             return None
-        return item.get("value")
+        value = item.get("value")
+        if description.value_key == "runningState":
+            return _translate_running_state(value)
+        return value
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -642,6 +658,10 @@ class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sensor
             attributes["api_name"] = item["name"]
         if item.get("time"):
             attributes["data_updated_at"] = item["time"]
+        if self.entity_description.value_key == "runningState":
+            code = _coerce_running_state_code(item.get("value"))
+            if code is not None:
+                attributes["code"] = code
         return attributes or None
 
 
@@ -789,6 +809,22 @@ def _coerce_power_value(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_running_state_code(value: Any) -> int | None:
+    """Convert running-state values to int where possible."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _translate_running_state(value: Any) -> str | Any:
+    """Convert FoxESS running-state codes into readable labels."""
+    code = _coerce_running_state_code(value)
+    if code is None:
+        return value
+    return _RUNNING_STATE_LABELS.get(code, f"Unknown ({code})")
 
 
 def build_dynamic_realtime_description(
