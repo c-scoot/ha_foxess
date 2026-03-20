@@ -491,9 +491,8 @@ class FoxESSSchedulerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sens
     """Read-only summary of the current FoxESS scheduler configuration."""
 
     _attr_has_entity_name = True
-    _attr_name = "Scheduler"
+    _attr_name = "Schedule Status"
     _attr_icon = "mdi:calendar-clock"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
         super().__init__(coordinator)

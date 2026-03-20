@@ -105,7 +105,7 @@ When supported by your inverter, the integration exposes:
 
 - `number` entities for `System Minimum SOC` and `Battery Cut-Off SOC`
 - `select` entity for `Work Mode`, limited to `Self-use` and `Mode Scheduler`
-- diagnostic `sensor` entity for `Scheduler`, showing the current scheduler flag, groups, and available work-mode enums as read-only attributes
+- read-only `sensor` entity for `Schedule Status`, showing the current scheduler flag, groups, and available work-mode enums as attributes
 
 - `System Minimum SOC` maps to FoxESS `minSoc`, the system-wide minimum reserve.
 - `Battery Cut-Off SOC` maps to FoxESS `minSocOnGrid`, the battery reserve used while grid-connected.
@@ -119,7 +119,7 @@ For the `0.1.0` release, the intended workflow is:
 
 This keeps Home Assistant focused on arming or disarming the scheduler without trying to replicate FoxESS' full schedule editor.
 For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler switch-status API rather than by writing `WorkMode=Scheduler`, so the Home Assistant select now enables or disables the scheduler directly and uses `WorkMode` only as supporting context.
-The `Scheduler` sensor is intentionally read-only for now and exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
+The `Schedule Status` sensor is intentionally read-only for now and exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
 
 Advanced users can also call Home Assistant services:
 
