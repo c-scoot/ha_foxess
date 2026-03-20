@@ -70,3 +70,9 @@ probe_work_mode:
       required: true
       selector:
         text:
+probe_scheduler:
+  fields:
+    device_sn:
+      required: true
+      selector:
+        text:

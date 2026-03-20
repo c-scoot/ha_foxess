@@ -33,6 +33,14 @@ from .const import (
     REALTIME_V1_PATH,
     REPORT_PATH,
     REPORT_VARIABLES,
+    SCHEDULER_GET_FLAG_V0_PATH,
+    SCHEDULER_GET_FLAG_V1_PATH,
+    SCHEDULER_GET_V0_PATH,
+    SCHEDULER_GET_V1_PATH,
+    SCHEDULER_GET_V2_PATH,
+    SCHEDULER_GET_V3_PATH,
+    SCHEDULER_SET_FLAG_V0_PATH,
+    SCHEDULER_SET_FLAG_V1_PATH,
     REQUEST_TIMEOUT_SECONDS,
     UPDATE_REQUEST_MIN_INTERVAL_SECONDS,
 )
@@ -709,6 +717,117 @@ class FoxESSApiClient:
                 }
 
         return results
+
+    async def async_get_scheduler_flag(self, device_sn: str) -> dict[str, Any]:
+        """Return scheduler support and enable status."""
+        requests = (
+            ("v1", SCHEDULER_GET_FLAG_V1_PATH),
+            ("v0", SCHEDULER_GET_FLAG_V0_PATH),
+        )
+        last_error: FoxESSApiError | None = None
+
+        for version, path in requests:
+            try:
+                data = await self._request("POST", path, payload={"deviceSN": device_sn}, log_request_errors=False)
+            except FoxESSApiError as err:
+                last_error = err
+                continue
+
+            result = data.get("result") or {}
+            if not isinstance(result, dict):
+                return {"version": version, "support": None, "enable": None}
+            return {
+                "version": version,
+                "support": _coerce_boolish(result.get("support")) if "support" in result else None,
+                "enable": _coerce_boolish(result.get("enable")) if "enable" in result else None,
+                "raw": result,
+            }
+
+        raise last_error or FoxESSApiError("Unable to read scheduler flag")
+
+    async def async_set_scheduler_enabled(self, device_sn: str, enabled: bool) -> str:
+        """Enable or disable scheduler mode."""
+        requests = (
+            ("v1", SCHEDULER_SET_FLAG_V1_PATH),
+            ("v0", SCHEDULER_SET_FLAG_V0_PATH),
+        )
+        last_error: FoxESSApiError | None = None
+
+        for version, path in requests:
+            try:
+                await self._request(
+                    "POST",
+                    path,
+                    payload={"deviceSN": device_sn, "enable": int(enabled)},
+                    log_request_errors=False,
+                )
+            except FoxESSApiError as err:
+                _LOGGER.debug(
+                    "FoxESS rejected scheduler flag write for %s with version=%s enable=%s errno=%s msg=%s",
+                    device_sn,
+                    version,
+                    enabled,
+                    err.errno,
+                    err,
+                )
+                last_error = err
+                continue
+
+            _LOGGER.info(
+                "FoxESS accepted scheduler flag write for %s with version=%s enable=%s",
+                device_sn,
+                version,
+                enabled,
+            )
+            return version
+
+        raise last_error or FoxESSApiError(f"Unable to set scheduler enabled={enabled}")
+
+    async def async_get_scheduler(self, device_sn: str) -> dict[str, Any]:
+        """Return scheduler groups using the newest supported API version."""
+        requests = (
+            ("v3", SCHEDULER_GET_V3_PATH),
+            ("v2", SCHEDULER_GET_V2_PATH),
+            ("v1", SCHEDULER_GET_V1_PATH),
+            ("v0", SCHEDULER_GET_V0_PATH),
+        )
+        last_error: FoxESSApiError | None = None
+
+        for version, path in requests:
+            try:
+                data = await self._request("POST", path, payload={"deviceSN": device_sn}, log_request_errors=False)
+            except FoxESSApiError as err:
+                last_error = err
+                continue
+
+            result = data.get("result")
+            return {
+                "version": version,
+                "result": result,
+            }
+
+        raise last_error or FoxESSApiError("Unable to read scheduler groups")
+
+    async def async_probe_scheduler(self, device_sn: str) -> dict[str, Any]:
+        """Probe scheduler flag and group endpoints without changing inverter state."""
+        result: dict[str, Any] = {}
+
+        try:
+            result["flag"] = await self.async_get_scheduler_flag(device_sn)
+        except FoxESSApiError as err:
+            result["flag"] = {"ok": False, "errno": err.errno, "error": str(err)}
+        else:
+            result["flag"]["ok"] = True
+
+        try:
+            schedule = await self.async_get_scheduler(device_sn)
+        except FoxESSApiError as err:
+            result["schedule"] = {"ok": False, "errno": err.errno, "error": str(err)}
+        else:
+            schedule["ok"] = True
+            result["schedule"] = schedule
+
+        return result
 
 
 def normalize_key(key: str) -> str:

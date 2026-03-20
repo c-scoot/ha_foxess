@@ -124,8 +124,7 @@ For the `0.1.0` release, the intended workflow is:
 - use the Home Assistant `Work Mode` select to switch between `Self-use` and `Mode Scheduler` when your inverter exposes the `WorkMode` setting through the API
 
 This keeps Home Assistant focused on arming or disarming the scheduler without trying to replicate FoxESS' full schedule editor.
-FoxESS behaviour appears to vary by inverter model and firmware, so the Home Assistant `Work Mode` select remains best-effort: if the cloud rejects the current `WorkMode` read or write shape, the entity can still exist even though the exact API value mapping needs refinement for that model.
-For `0.1.0`, the integration will try a small set of likely FoxESS work-mode keys and values and include the attempted combinations in the final error message to make model-specific troubleshooting easier.
+For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler switch-status API rather than by writing `WorkMode=Scheduler`, so the Home Assistant select now enables or disables the scheduler directly and uses `WorkMode` only as supporting context.
 
 Advanced users can also call Home Assistant services:
 
@@ -133,3 +132,4 @@ Advanced users can also call Home Assistant services:
 - `foxess_cloud.set_charge_periods`
 - `foxess_cloud.set_device_setting`
 - `foxess_cloud.probe_work_mode` to log any mode-like detail/realtime fields plus read attempts for likely work-mode setting keys
+- `foxess_cloud.probe_scheduler` to log the scheduler flag status and current schedule groups from the scheduler API
