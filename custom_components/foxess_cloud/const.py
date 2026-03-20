@@ -73,7 +73,4 @@ REPORT_VARIABLES: Final[tuple[str, ...]] = (
 )
 
 SERVICE_SET_MIN_SOC: Final = "set_min_soc"
-SERVICE_SET_DEVICE_SETTING: Final = "set_device_setting"
-SERVICE_PROBE_WORK_MODE: Final = "probe_work_mode"
-SERVICE_PROBE_SCHEDULER: Final = "probe_scheduler"
 LEGACY_SERVICE_SET_CHARGE_PERIODS: Final = "set_charge_periods"

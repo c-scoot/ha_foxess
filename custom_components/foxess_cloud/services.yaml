@@ -20,29 +20,3 @@ set_min_soc:
           min: 0
           max: 100
           mode: box
-set_device_setting:
-  fields:
-    device_sn:
-      required: true
-      selector:
-        text:
-    key:
-      required: true
-      selector:
-        text:
-    value:
-      required: true
-      selector:
-        text:
-probe_work_mode:
-  fields:
-    device_sn:
-      required: true
-      selector:
-        text:
-probe_scheduler:
-  fields:
-    device_sn:
-      required: true
-      selector:
-        text:

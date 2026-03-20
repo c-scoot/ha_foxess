@@ -105,7 +105,7 @@ When supported by your inverter, the integration exposes:
 
 - `number` entities for `System Minimum SOC` and `Battery Cut-Off SOC`
 - `select` entity for `Work Mode`, limited to `Self-use` and `Mode Scheduler`
-- `sensor` entities for native net power, including `Battery Net Power` and `Grid Net Power`
+- `sensor` entities for native net power, including `Battery Net Power`, `Grid Net Power`, and `Non-EPS Load Power`
 - read-only `sensor` entity for `Schedule Status`, showing the current scheduler flag, groups, and available work-mode enums as attributes
 
 - `System Minimum SOC` maps to FoxESS `minSoc`, the system-wide minimum reserve.
@@ -122,10 +122,8 @@ This keeps Home Assistant focused on arming or disarming the scheduler without t
 For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler switch-status API rather than by writing `WorkMode=Scheduler`, so the Home Assistant select now enables or disables the scheduler directly and uses `WorkMode` only as supporting context.
 The `Schedule Status` sensor is intentionally read-only for now and exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
 For dashboards and statistics, prefer the native `Battery Net Power` and `Grid Net Power` sensors over helper-created net-power entities, because the native sensors keep a stable unit definition in the integration.
+`Non-EPS Load Power` is derived as `Load Power - EPS Power`, which matches the FoxESS split between total load, EPS-backed load, and the remainder that is not on the EPS output.
 
-Advanced users can also call Home Assistant services:
+Advanced users can also call the Home Assistant service:
 
 - `foxess_cloud.set_min_soc`
-- `foxess_cloud.set_device_setting`
-- `foxess_cloud.probe_work_mode` to log any mode-like detail/realtime fields plus read attempts for likely work-mode setting keys
-- `foxess_cloud.probe_scheduler` to log the scheduler flag status and current schedule groups from the scheduler API

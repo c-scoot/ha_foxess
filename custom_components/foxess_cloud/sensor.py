@@ -467,6 +467,7 @@ def _build_entities_for_coordinator(
     entities: list[SensorEntity] = []
     entities.append(FoxESSSchedulerSensor(coordinator))
     entities.append(FoxESSGridNetPowerSensor(coordinator))
+    entities.append(FoxESSNonEPSLoadPowerSensor(coordinator))
 
     for description in KNOWN_REALTIME_DESCRIPTIONS.values():
         entities.append(FoxESSOpenAPISensor(coordinator, description))
@@ -598,6 +599,46 @@ class FoxESSGridNetPowerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], S
             "negative_direction": "exporting_to_grid",
             "import_source": "gridConsumptionPower",
             "export_source": "feedinPower",
+        }
+
+
+class FoxESSNonEPSLoadPowerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
+    """Derived non-EPS load power where total load excludes EPS-backed load."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Non-EPS Load Power"
+    _attr_icon = "mdi:home-lightning-bolt-outline"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_sn}_non_eps_load_power"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def native_value(self) -> float | None:
+        total_load = _coerce_power_value(
+            self.coordinator.data.realtime.get("loadsPower", {}).get("value")
+        )
+        eps_load = _coerce_first_power_value(
+            self.coordinator.data.realtime,
+            "EPSPower",
+            "epsPower",
+        )
+
+        if total_load is None or eps_load is None:
+            return None
+
+        return round(max(total_load - eps_load, 0.0), 3)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "calculation": "loadsPower - EPSPower",
+            "total_load_source": "loadsPower",
+            "eps_load_source": "EPSPower",
         }
 
 
@@ -809,6 +850,18 @@ def _coerce_power_value(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_first_power_value(
+    realtime: dict[str, Any],
+    *keys: str,
+) -> float | None:
+    """Return the first available realtime power value from the supplied keys."""
+    for key in keys:
+        value = _coerce_power_value(realtime.get(key, {}).get("value"))
+        if value is not None:
+            return value
+    return None
 
 
 def _coerce_running_state_code(value: Any) -> int | None:

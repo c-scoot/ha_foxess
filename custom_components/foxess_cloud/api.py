@@ -693,31 +693,6 @@ class FoxESSApiClient:
             ) from last_error
         return None
 
-    async def async_probe_work_mode(self, device_sn: str) -> dict[str, dict[str, Any]]:
-        """Probe likely work-mode setting keys without changing inverter state."""
-        results: dict[str, dict[str, Any]] = {}
-
-        for key in _WORK_MODE_SETTING_KEYS:
-            try:
-                value = await self.async_get_device_setting(
-                    device_sn,
-                    key,
-                    log_request_errors=False,
-                )
-            except FoxESSApiError as err:
-                results[key] = {
-                    "ok": False,
-                    "errno": err.errno,
-                    "error": str(err),
-                }
-            else:
-                results[key] = {
-                    "ok": True,
-                    "value": value,
-                }
-
-        return results
-
     async def async_get_scheduler_flag(self, device_sn: str) -> dict[str, Any]:
         """Return scheduler support and enable status."""
         requests = (
@@ -807,28 +782,6 @@ class FoxESSApiClient:
             }
 
         raise last_error or FoxESSApiError("Unable to read scheduler groups")
-
-    async def async_probe_scheduler(self, device_sn: str) -> dict[str, Any]:
-        """Probe scheduler flag and group endpoints without changing inverter state."""
-        result: dict[str, Any] = {}
-
-        try:
-            result["flag"] = await self.async_get_scheduler_flag(device_sn)
-        except FoxESSApiError as err:
-            result["flag"] = {"ok": False, "errno": err.errno, "error": str(err)}
-        else:
-            result["flag"]["ok"] = True
-
-        try:
-            schedule = await self.async_get_scheduler(device_sn)
-        except FoxESSApiError as err:
-            result["schedule"] = {"ok": False, "errno": err.errno, "error": str(err)}
-        else:
-            schedule["ok"] = True
-            result["schedule"] = schedule
-
-        return result
-
 
 def normalize_key(key: str) -> str:
     """Normalize API variable names to a stable snake_case key."""
