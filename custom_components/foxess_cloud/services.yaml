@@ -64,3 +64,9 @@ set_device_setting:
       required: true
       selector:
         text:
+probe_work_mode:
+  fields:
+    device_sn:
+      required: true
+      selector:
+        text:

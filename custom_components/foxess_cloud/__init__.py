@@ -20,6 +20,7 @@ from .const import (
     CONF_DEVICE_SNS,
     DOMAIN,
     PLATFORMS,
+    SERVICE_PROBE_WORK_MODE,
     SERVICE_SET_CHARGE_PERIODS,
     SERVICE_SET_DEVICE_SETTING,
     SERVICE_SET_MIN_SOC,
@@ -77,6 +78,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hass.services.async_remove(DOMAIN, SERVICE_SET_MIN_SOC)
             hass.services.async_remove(DOMAIN, SERVICE_SET_CHARGE_PERIODS)
             hass.services.async_remove(DOMAIN, SERVICE_SET_DEVICE_SETTING)
+            hass.services.async_remove(DOMAIN, SERVICE_PROBE_WORK_MODE)
     return unload_ok
 
 
@@ -122,6 +124,36 @@ def _register_services(hass: HomeAssistant) -> None:
             await coordinator._async_refresh_work_mode()  # noqa: SLF001
         coordinator.async_update_listeners()
 
+    async def async_handle_probe_work_mode(call: ServiceCall) -> None:
+        coordinator = _find_coordinator(hass, call.data["device_sn"])
+        runtime_data = hass.data[DOMAIN][coordinator.config_entry.entry_id]
+        api: FoxESSApiClient = runtime_data["api"]
+
+        await coordinator.async_request_refresh()
+
+        detail_mode_fields = {
+            key: value
+            for key, value in coordinator.data.detail.items()
+            if "mode" in str(key).lower()
+        }
+        realtime_mode_fields = {
+            key: value.get("value")
+            for key, value in coordinator.data.realtime.items()
+            if "mode" in str(key).lower() and isinstance(value, dict)
+        }
+        probe_results = await api.async_probe_work_mode(coordinator.device_sn)
+
+        _LOGGER.warning(
+            "FoxESS work mode probe for %s model=%s detail_mode_fields=%s realtime_mode_fields=%s setting_probes=%s",
+            coordinator.device_sn,
+            coordinator.data.detail.get("deviceType")
+            or coordinator.data.detail.get("model")
+            or coordinator.device.device_type,
+            detail_mode_fields,
+            realtime_mode_fields,
+            probe_results,
+        )
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_SET_MIN_SOC,
@@ -161,6 +193,16 @@ def _register_services(hass: HomeAssistant) -> None:
                 vol.Required("device_sn"): cv.string,
                 vol.Required("key"): cv.string,
                 vol.Required("value"): object,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PROBE_WORK_MODE,
+        async_handle_probe_work_mode,
+        schema=vol.Schema(
+            {
+                vol.Required("device_sn"): cv.string,
             }
         ),
     )

@@ -132,3 +132,4 @@ Advanced users can also call Home Assistant services:
 - `foxess_cloud.set_min_soc`
 - `foxess_cloud.set_charge_periods`
 - `foxess_cloud.set_device_setting`
+- `foxess_cloud.probe_work_mode` to log any mode-like detail/realtime fields plus read attempts for likely work-mode setting keys

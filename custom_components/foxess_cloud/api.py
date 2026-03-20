@@ -685,6 +685,31 @@ class FoxESSApiClient:
             ) from last_error
         return None
 
+    async def async_probe_work_mode(self, device_sn: str) -> dict[str, dict[str, Any]]:
+        """Probe likely work-mode setting keys without changing inverter state."""
+        results: dict[str, dict[str, Any]] = {}
+
+        for key in _WORK_MODE_SETTING_KEYS:
+            try:
+                value = await self.async_get_device_setting(
+                    device_sn,
+                    key,
+                    log_request_errors=False,
+                )
+            except FoxESSApiError as err:
+                results[key] = {
+                    "ok": False,
+                    "errno": err.errno,
+                    "error": str(err),
+                }
+            else:
+                results[key] = {
+                    "ok": True,
+                    "value": value,
+                }
+
+        return results
+
 
 def normalize_key(key: str) -> str:
     """Normalize API variable names to a stable snake_case key."""
