@@ -94,7 +94,7 @@ class FoxESSWorkModeSelect(
 
     @property
     def current_option(self) -> str | None:
-        return self._infer_current_option() or self._current_option
+        return self._current_option or self._infer_current_option()
 
     async def async_select_option(self, option: str) -> None:
         if option not in self.options:
@@ -106,6 +106,11 @@ class FoxESSWorkModeSelect(
             await self.coordinator.async_set_scheduler_enabled(False)
         self._current_option = option
         self.async_write_ha_state()
+
+    def _handle_coordinator_update(self) -> None:
+        """Sync the displayed option back to the latest cloud state."""
+        self._current_option = self._infer_current_option() or self._current_option
+        super()._handle_coordinator_update()
 
     def _infer_current_option(self) -> str | None:
         if self.coordinator.data.scheduler_enabled is True:
