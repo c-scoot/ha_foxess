@@ -463,7 +463,8 @@ def _build_entities_for_coordinator(
     seen_dynamic_keys = {
         normalize_key(entity.entity_description.value_key)
         for entity in entities
-        if entity.entity_description.source == "realtime"
+        if isinstance(entity, FoxESSOpenAPISensor)
+        and entity.entity_description.source == "realtime"
     }
 
     for raw_key, value in coordinator.data.realtime.items():
