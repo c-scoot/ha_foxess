@@ -111,12 +111,15 @@ def _register_services(hass: HomeAssistant) -> None:
         coordinator = _find_coordinator(hass, call.data["device_sn"])
         runtime_data = hass.data[DOMAIN][coordinator.config_entry.entry_id]
         api: FoxESSApiClient = runtime_data["api"]
+        key = call.data["key"]
         await api.async_set_device_setting(
             coordinator.device_sn,
-            call.data["key"],
+            key,
             call.data["value"],
         )
         await coordinator._async_refresh_control_settings()  # noqa: SLF001
+        if key.replace("_", "").lower() == "workmode":
+            await coordinator._async_refresh_work_mode()  # noqa: SLF001
         coordinator.async_update_listeners()
 
     hass.services.async_register(

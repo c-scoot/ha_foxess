@@ -26,13 +26,13 @@ SWITCH_DESCRIPTIONS: tuple[FoxESSSwitchDescription, ...] = (
     FoxESSSwitchDescription(
         key="charge_period_1_enabled",
         period=1,
-        name="Charge From Grid Period 1",
+        name="Enable Force Charge Window 1",
         icon="mdi:transmission-tower-import",
     ),
     FoxESSSwitchDescription(
         key="charge_period_2_enabled",
         period=2,
-        name="Charge From Grid Period 2",
+        name="Enable Force Charge Window 2",
         icon="mdi:transmission-tower-import",
     ),
 )

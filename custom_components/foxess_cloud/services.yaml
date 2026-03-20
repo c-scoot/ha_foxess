@@ -25,8 +25,8 @@ set_charge_periods:
       selector:
         text:
     charge_from_grid1:
-      name: Charge From Grid Period 1
-      description: Allow grid charging during force-charge window 1.
+      name: Enable Force Charge Window 1
+      description: Arm force-charge window 1 so grid charging is allowed during that time range.
       selector:
         boolean:
     start_time1:
@@ -38,8 +38,8 @@ set_charge_periods:
       selector:
         time:
     charge_from_grid2:
-      name: Charge From Grid Period 2
-      description: Allow grid charging during force-charge window 2.
+      name: Enable Force Charge Window 2
+      description: Arm force-charge window 2 so grid charging is allowed during that time range.
       selector:
         boolean:
     start_time2:

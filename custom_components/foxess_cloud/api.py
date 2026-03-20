@@ -42,6 +42,11 @@ _LOGGER = logging.getLogger(__name__)
 _CAMEL_CASE_PATTERN = re.compile(r"(?<!^)(?=[A-Z])")
 _PV_PATTERN = re.compile(r"^(pv)(\d+)(power|volt|voltage|current)$", re.IGNORECASE)
 _PHASE_PATTERN = re.compile(r"^([rst])(volt|current|power|freq)$", re.IGNORECASE)
+_WORK_MODE_SETTING_KEYS: tuple[str, ...] = ("WorkMode", "workMode")
+_WORK_MODE_OPTION_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "self_use": ("SelfUse", "SelfUseMode", "Self Use"),
+    "mode_scheduler": ("ModeScheduler", "Scheduler", "TimeMode", "Mode Scheduler"),
+}
 
 
 class FoxESSApiError(Exception):
@@ -134,6 +139,8 @@ class FoxESSApiClient:
         path: str,
         payload: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        *,
+        log_request_errors: bool = True,
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
         await self._async_wait_for_rate_limit(path, method)
@@ -204,7 +211,8 @@ class FoxESSApiClient:
             )
             raise FoxESSAuthenticationError(data.get("msg", "Authentication failed"), errno)
         if errno in REQUEST_ERRORS:
-            _LOGGER.warning(
+            log_fn = _LOGGER.warning if log_request_errors else _LOGGER.debug
+            log_fn(
                 "FoxESS request error on %s %s: errno=%s msg=%s payload=%s params=%s",
                 method,
                 path,
@@ -529,15 +537,29 @@ class FoxESSApiClient:
             },
         )
 
-    async def async_set_device_setting(self, device_sn: str, key: str, value: Any) -> None:
+    async def async_set_device_setting(
+        self,
+        device_sn: str,
+        key: str,
+        value: Any,
+        *,
+        log_request_errors: bool = True,
+    ) -> None:
         """Set a writable device setting by key."""
         await self._request(
             "POST",
             DEVICE_SETTING_SET_PATH,
             payload={"sn": device_sn, "key": key, "value": value},
+            log_request_errors=log_request_errors,
         )
 
-    async def async_get_device_setting(self, device_sn: str, key: str) -> Any:
+    async def async_get_device_setting(
+        self,
+        device_sn: str,
+        key: str,
+        *,
+        log_request_errors: bool = False,
+    ) -> Any:
         """Read a device setting by key, if the inverter exposes it."""
         requests: tuple[tuple[str, dict[str, Any] | None, dict[str, Any] | None], ...] = (
             ("GET", None, {"sn": device_sn, "key": key}),
@@ -547,7 +569,13 @@ class FoxESSApiClient:
 
         for method, payload, params in requests:
             try:
-                data = await self._request(method, DEVICE_SETTING_GET_PATH, payload=payload, params=params)
+                data = await self._request(
+                    method,
+                    DEVICE_SETTING_GET_PATH,
+                    payload=payload,
+                    params=params,
+                    log_request_errors=log_request_errors,
+                )
             except FoxESSApiError as err:
                 last_error = err
                 continue
@@ -564,31 +592,98 @@ class FoxESSApiClient:
         raise last_error or FoxESSApiError(f"Unable to read device setting: {key}")
 
     async def async_set_work_mode(self, device_sn: str, option_key: str) -> str:
-        """Set the inverter work mode using the most likely FoxESS payload values."""
-        candidates = {
-            "self_use": ("SelfUse", "SelfUseMode"),
-            "mode_scheduler": ("ModeScheduler", "Scheduler", "TimeMode"),
-        }.get(option_key)
+        """Set the inverter work mode using the most likely FoxESS keys and values."""
+        candidates = _WORK_MODE_OPTION_CANDIDATES.get(option_key)
         if candidates is None:
             raise FoxESSApiError(f"Unsupported work mode option: {option_key}")
 
         last_error: FoxESSApiError | None = None
-        for candidate in candidates:
-            try:
-                await self.async_set_device_setting(device_sn, "WorkMode", candidate)
-            except FoxESSApiError as err:
-                last_error = err
-                continue
-            return candidate
+        attempted_pairs: list[str] = []
+        for key in _WORK_MODE_SETTING_KEYS:
+            for candidate in candidates:
+                attempted_pairs.append(f"{key}={candidate}")
+                _LOGGER.debug(
+                    "Trying FoxESS work mode write for %s with key=%s value=%s",
+                    device_sn,
+                    key,
+                    candidate,
+                )
+                try:
+                    await self.async_set_device_setting(
+                        device_sn,
+                        key,
+                        candidate,
+                        log_request_errors=False,
+                    )
+                except FoxESSApiError as err:
+                    _LOGGER.debug(
+                        "FoxESS rejected work mode write for %s with key=%s value=%s errno=%s msg=%s",
+                        device_sn,
+                        key,
+                        candidate,
+                        err.errno,
+                        err,
+                    )
+                    last_error = err
+                    continue
 
-        raise last_error or FoxESSApiError(f"Unable to set work mode: {option_key}")
+                _LOGGER.info(
+                    "FoxESS accepted work mode write for %s with key=%s value=%s",
+                    device_sn,
+                    key,
+                    candidate,
+                )
+                return candidate
+
+        attempts = ", ".join(attempted_pairs)
+        if last_error is not None:
+            raise FoxESSApiError(
+                f"Unable to set work mode: {option_key}. Tried {attempts}. Last error: {last_error}",
+                last_error.errno,
+            ) from last_error
+        raise FoxESSApiError(f"Unable to set work mode: {option_key}. Tried {attempts}")
 
     async def async_get_work_mode(self, device_sn: str) -> str | None:
         """Return the current inverter work mode, if exposed."""
-        value = await self.async_get_device_setting(device_sn, "WorkMode")
-        if value is None:
-            return None
-        return str(value)
+        last_error: FoxESSApiError | None = None
+
+        for key in _WORK_MODE_SETTING_KEYS:
+            _LOGGER.debug("Trying FoxESS work mode read for %s with key=%s", device_sn, key)
+            try:
+                value = await self.async_get_device_setting(
+                    device_sn,
+                    key,
+                    log_request_errors=False,
+                )
+            except FoxESSApiError as err:
+                _LOGGER.debug(
+                    "FoxESS rejected work mode read for %s with key=%s errno=%s msg=%s",
+                    device_sn,
+                    key,
+                    err.errno,
+                    err,
+                )
+                last_error = err
+                continue
+
+            if value is None:
+                _LOGGER.debug("FoxESS work mode read returned empty result for %s with key=%s", device_sn, key)
+                continue
+
+            _LOGGER.debug(
+                "FoxESS work mode read succeeded for %s with key=%s value=%s",
+                device_sn,
+                key,
+                value,
+            )
+            return str(value)
+
+        if last_error is not None:
+            raise FoxESSApiError(
+                f"Unable to read work mode. Tried keys: {', '.join(_WORK_MODE_SETTING_KEYS)}. Last error: {last_error}",
+                last_error.errno,
+            ) from last_error
+        return None
 
 
 def normalize_key(key: str) -> str:

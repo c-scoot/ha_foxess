@@ -105,26 +105,27 @@ When supported by your inverter, the integration exposes:
 
 - `number` entities for `Minimum SOC` and `Cut-Off SOC`
 - `select` entity for `Work Mode`, limited to `Self-use` and `Mode Scheduler`
-- `switch` entities for `Charge From Grid Period 1` and `Charge From Grid Period 2`
+- `switch` entities for `Enable Force Charge Window 1` and `Enable Force Charge Window 2`
 - `time` entities to edit the start/end time for each force-charge window
 
 The force-charge controls map to FoxESS' basic battery charge-period settings:
 
-- `Charge From Grid Period X` controls whether the inverter is allowed to draw from the grid during that window.
+- `Enable Force Charge Window X` arms that window, meaning the inverter is allowed to draw from the grid during it.
 - `Force Charge Window X Start` and `End` define the time window for that period.
 - `Cut-Off SOC` is the FoxESS grid-connected battery reserve value returned by the API as `minSocOnGrid`.
 
 These controls are not the same thing as FoxCloud 2.0 `Mode Scheduler`. The official FoxCloud 2.0 app manual describes `Mode Scheduler` as a separate feature and notes that battery quick settings cannot be changed while `Mode Scheduler` is enabled. This integration currently manages the battery charge-period settings exposed by the Open API, not the full Mode Scheduler schedule editor.
 
-In practice, FoxESS behavior appears to vary by inverter model and firmware. If your charge windows do not take effect immediately, check the active work mode in FoxESS and verify the corresponding `Charge From Grid Period` switch is on.
+In practice, FoxESS behavior appears to vary by inverter model and firmware. If your charge windows do not take effect immediately, check the active work mode in FoxESS and verify the corresponding `Enable Force Charge Window` switch is on.
 
-For the `0.0.2` release, the intended workflow is:
+For the `0.1.0` release, the intended workflow is:
 
 - configure your actual scheduler periods in the FoxESS app
-- use the Home Assistant `Work Mode` select to switch between `Self-use` and `Mode Scheduler`
+- use the Home Assistant `Work Mode` select to switch between `Self-use` and `Mode Scheduler` when your inverter exposes the `WorkMode` setting through the API
 
 This keeps Home Assistant focused on arming or disarming the scheduler without trying to replicate FoxESS' full schedule editor.
-When FoxESS exposes the current `WorkMode` setting for your inverter, the Home Assistant select will refresh from the cloud on the normal polling cycle so changes made in the FoxESS app are reflected back in HA.
+FoxESS behaviour appears to vary by inverter model and firmware, so the Home Assistant `Work Mode` select remains best-effort: if the cloud rejects the current `WorkMode` read or write shape, the entity can still exist even though the exact API value mapping needs refinement for that model.
+For `0.1.0`, the integration will try a small set of likely FoxESS work-mode keys and values and include the attempted combinations in the final error message to make model-specific troubleshooting easier.
 
 Advanced users can also call Home Assistant services:
 
