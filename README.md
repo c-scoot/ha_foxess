@@ -58,6 +58,34 @@ The official FoxESS variable table describes the cumulative realtime counters as
 - `energyThroughput`: battery throughput
 - `PVEnergyTotal`: photovoltaic power generation
 
+## Sensor discovery and naming
+
+The integration now uses a curated-first sensor model:
+
+- A fixed set of curated sensors is created for the FoxESS fields we actively support and name clearly.
+- Any additional realtime FoxESS fields that are not recognized are still exposed as dynamic fallback sensors.
+- Known alternate FoxESS keys and typo variants are mapped back onto the curated sensors where possible, so the cleaner entity wins and obvious duplicates are suppressed.
+
+The curated sensors currently include:
+
+- Core realtime power sensors such as `Generation Power`, `PV Power`, `Feed-in Power`, `Grid Consumption Power`, and `Load Power`
+- Battery power sensors such as `Battery Charge Power`, `Battery Discharge Power`, and `Battery Net Power`
+- Battery state sensors such as `Battery SOC`, optional secondary SOC sensors, and `Battery SOH`
+- Realtime totals such as `Total Feed-in`, `Total Grid Consumption`, `Total Load Consumption`, `Total Battery Charged`, `Total Battery Discharged`, and `Battery Throughput`
+- Thermal and state sensors such as `Ambient Temperature`, `Boost Temperature`, `Inverter Temperature`, `Battery Temperature`, `Battery Temperature 2`, `Running State`, and `Power Factor`
+- Daily report sensors such as `Daily Generation`, `Daily PV Energy Total`, `Daily Feed-in`, `Daily Grid Consumption`, `Daily Load Consumption`, `Daily Battery Charged`, and `Daily Battery Discharged`
+- Derived sensors such as `Battery Net Power`, `Grid Net Power`, `Non-EPS Load Power`, per-string `PV X Generated Energy`, and the read-only `Schedule Status`
+- Diagnostic sensors such as `Last Successful Update` and `API Calls Today`
+
+What happens when FoxESS exposes other fields:
+
+- Unknown realtime keys are still discovered automatically so model-specific data is not lost.
+- If a discovered key is just an alternate FoxESS spelling or naming variant of a curated sensor, the integration prefers the curated sensor and avoids exposing the raw duplicate.
+- If FoxESS exposes a key but does not populate a value for your inverter, the entity may exist but remain unavailable.
+- Disabled-by-default entities are optional or model-dependent. Enabling them does not guarantee your inverter or FoxESS account will return a value.
+
+This means some FoxESS models will still show a few extra dynamically discovered sensors, but the integration aims to keep the main user-facing entities stable, readable, and free from obvious duplicate names like raw `SOH` or typo-based `Inv Temperation` variants.
+
 ## Signing notes
 
 FoxESS request signing is sensitive to the exact string used for the MD5 input. The integration signs requests using the documented path, token, and timestamp with literal `\r\n` separators, because FoxESS may reject otherwise-valid API keys as malformed requests if the signing format does not match exactly.
