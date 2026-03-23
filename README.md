@@ -58,6 +58,34 @@ The official FoxESS variable table describes the cumulative realtime counters as
 - `energyThroughput`: battery throughput
 - `PVEnergyTotal`: photovoltaic power generation
 
+## Sensor discovery and naming
+
+The integration now uses a curated-first sensor model:
+
+- A fixed set of curated sensors is created for the FoxESS fields we actively support and name clearly.
+- Any additional realtime FoxESS fields that are not recognized are still exposed as dynamic fallback sensors.
+- Known alternate FoxESS keys and typo variants are mapped back onto the curated sensors where possible, so the cleaner entity wins and obvious duplicates are suppressed.
+
+The curated sensors currently include:
+
+- Core realtime power sensors such as `Generation Power`, `PV Power`, `Feed-in Power`, `Grid Consumption Power`, and `Load Power`
+- Battery power sensors such as `Battery Charge Power`, `Battery Discharge Power`, and `Battery Net Power`
+- Battery state sensors such as `Battery SOC`, optional secondary SOC sensors, and `Battery SOH`
+- Realtime totals such as `Total Feed-in`, `Total Grid Consumption`, `Total Load Consumption`, `Total Battery Charged`, `Total Battery Discharged`, and `Battery Throughput`
+- Thermal and state sensors such as `Ambient Temperature`, `Boost Temperature`, `Inverter Temperature`, `Battery Temperature`, `Battery Temperature 2`, `Running State`, and `Power Factor`
+- Daily report sensors such as `Daily Generation`, `Daily PV Energy Total`, `Daily Feed-in`, `Daily Grid Consumption`, `Daily Load Consumption`, `Daily Battery Charged`, and `Daily Battery Discharged`
+- Derived sensors such as `Battery Net Power`, `Grid Net Power`, `Non-EPS Load Power`, per-string `PV X Generated Energy`, and the read-only `Schedule Status`
+- Diagnostic sensors such as `Last Successful Update` and `API Calls Today`
+
+What happens when FoxESS exposes other fields:
+
+- Unknown realtime keys are still discovered automatically so model-specific data is not lost.
+- If a discovered key is just an alternate FoxESS spelling or naming variant of a curated sensor, the integration prefers the curated sensor and avoids exposing the raw duplicate.
+- If FoxESS exposes a key but does not populate a value for your inverter, the entity may exist but remain unavailable.
+- Disabled-by-default entities are optional or model-dependent. Enabling them does not guarantee your inverter or FoxESS account will return a value.
+
+This means some FoxESS models will still show a few extra dynamically discovered sensors, but the integration aims to keep the main user-facing entities stable, readable, and free from obvious duplicate names like raw `SOH` or typo-based `Inv Temperation` variants.
+
 ## Signing notes
 
 FoxESS request signing is sensitive to the exact string used for the MD5 input. The integration signs requests using the documented path, token, and timestamp with literal `\r\n` separators, because FoxESS may reject otherwise-valid API keys as malformed requests if the signing format does not match exactly.
@@ -103,31 +131,29 @@ The integration uses the request shapes documented in the official Open API:
 
 When supported by your inverter, the integration exposes:
 
-- `number` entities for `Minimum SOC` and `Cut-Off SOC`
+- `number` entities for `System Minimum SOC` and `Battery Cut-Off SOC`
 - `select` entity for `Work Mode`, limited to `Self-use` and `Mode Scheduler`
-- `switch` entities for `Charge From Grid Period 1` and `Charge From Grid Period 2`
-- `time` entities to edit the start/end time for each force-charge window
+- `sensor` entities for native net power, including `Battery Net Power`, `Grid Net Power`, and `Non-EPS Load Power`
+- read-only `sensor` entity for `Schedule Status`, showing the current scheduler flag, groups, and available work-mode enums as attributes
+- diagnostic `sensor` entity for `API Calls Today`, disabled by default and reset daily
 
-The force-charge controls map to FoxESS' basic battery charge-period settings:
+- `System Minimum SOC` maps to FoxESS `minSoc`, the system-wide minimum reserve.
+- `Battery Cut-Off SOC` maps to FoxESS `minSocOnGrid`, the battery reserve used while grid-connected.
 
-- `Charge From Grid Period X` controls whether the inverter is allowed to draw from the grid during that window.
-- `Force Charge Window X Start` and `End` define the time window for that period.
-- `Cut-Off SOC` is the FoxESS grid-connected battery reserve value returned by the API as `minSocOnGrid`.
+The older Open API force-charge window controls are intentionally no longer exposed in Home Assistant, because on newer FoxESS models they are superseded by the full FoxCloud `Mode Scheduler`.
 
-These controls are not the same thing as FoxCloud 2.0 `Mode Scheduler`. The official FoxCloud 2.0 app manual describes `Mode Scheduler` as a separate feature and notes that battery quick settings cannot be changed while `Mode Scheduler` is enabled. This integration currently manages the battery charge-period settings exposed by the Open API, not the full Mode Scheduler schedule editor.
-
-In practice, FoxESS behavior appears to vary by inverter model and firmware. If your charge windows do not take effect immediately, check the active work mode in FoxESS and verify the corresponding `Charge From Grid Period` switch is on.
-
-For the `0.0.2` release, the intended workflow is:
+For the `0.1.0` release, the intended workflow is:
 
 - configure your actual scheduler periods in the FoxESS app
 - use the Home Assistant `Work Mode` select to switch between `Self-use` and `Mode Scheduler`
 
 This keeps Home Assistant focused on arming or disarming the scheduler without trying to replicate FoxESS' full schedule editor.
-When FoxESS exposes the current `WorkMode` setting for your inverter, the Home Assistant select will refresh from the cloud on the normal polling cycle so changes made in the FoxESS app are reflected back in HA.
+For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler switch-status API rather than by writing `WorkMode=Scheduler`, so the Home Assistant select now enables or disables the scheduler directly and uses `WorkMode` only as supporting context.
+The `Schedule Status` sensor is intentionally read-only for now and exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
+For dashboards and statistics, prefer the native `Battery Net Power` and `Grid Net Power` sensors over helper-created net-power entities, because the native sensors keep a stable unit definition in the integration.
+`Non-EPS Load Power` is derived as `Load Power - EPS Power`, which matches the FoxESS split between total load, EPS-backed load, and the remainder that is not on the EPS output.
+`API Calls Today` counts outbound FoxESS requests for that inverter, resets on the integration side each local day, and is intended as a disabled-by-default diagnostic sensor rather than a primary dashboard entity.
 
-Advanced users can also call Home Assistant services:
+Advanced users can also call the Home Assistant service:
 
 - `foxess_cloud.set_min_soc`
-- `foxess_cloud.set_charge_periods`
-- `foxess_cloud.set_device_setting`

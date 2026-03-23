@@ -19,11 +19,6 @@ from .sensor import build_device_info
 OPTION_SELF_USE: Final = "Self-use"
 OPTION_MODE_SCHEDULER: Final = "Mode Scheduler"
 
-_OPTION_TO_KEY: Final[dict[str, str]] = {
-    OPTION_SELF_USE: "self_use",
-    OPTION_MODE_SCHEDULER: "mode_scheduler",
-}
-
 _API_VALUE_TO_OPTION: Final[dict[str, str]] = {
     "selfuse": OPTION_SELF_USE,
     "selfusemode": OPTION_SELF_USE,
@@ -99,20 +94,30 @@ class FoxESSWorkModeSelect(
 
     @property
     def current_option(self) -> str | None:
-        return self._infer_current_option() or self._current_option
+        return self._current_option or self._infer_current_option()
 
     async def async_select_option(self, option: str) -> None:
         if option not in self.options:
             raise ValueError(f"Unsupported option: {option}")
 
-        await self.coordinator.api.async_set_work_mode(
-            self.coordinator.device_sn,
-            _OPTION_TO_KEY[option],
-        )
+        if option == OPTION_MODE_SCHEDULER:
+            await self.coordinator.async_set_scheduler_enabled(True)
+        else:
+            await self.coordinator.async_set_scheduler_enabled(False)
         self._current_option = option
         self.async_write_ha_state()
 
+    def _handle_coordinator_update(self) -> None:
+        """Sync the displayed option back to the latest cloud state."""
+        self._current_option = self._infer_current_option() or self._current_option
+        super()._handle_coordinator_update()
+
     def _infer_current_option(self) -> str | None:
+        if self.coordinator.data.scheduler_enabled is True:
+            return OPTION_MODE_SCHEDULER
+        if self.coordinator.data.scheduler_enabled is False:
+            return OPTION_SELF_USE
+
         for candidate in (
             self.coordinator.data.work_mode,
             self.coordinator.data.detail.get("workMode"),

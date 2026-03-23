@@ -19,10 +19,10 @@ from .api import FoxESSApiClient, FoxESSApiError, FoxESSAuthenticationError
 from .const import (
     CONF_DEVICE_SNS,
     DOMAIN,
+    LEGACY_SERVICE_SET_CHARGE_PERIODS,
     PLATFORMS,
-    SERVICE_SET_CHARGE_PERIODS,
-    SERVICE_SET_DEVICE_SETTING,
     SERVICE_SET_MIN_SOC,
+    UNLOAD_PLATFORMS,
 )
 from .coordinator import FoxESSDataUpdateCoordinator
 
@@ -70,13 +70,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, UNLOAD_PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id)
         if not hass.data[DOMAIN]:
             hass.services.async_remove(DOMAIN, SERVICE_SET_MIN_SOC)
-            hass.services.async_remove(DOMAIN, SERVICE_SET_CHARGE_PERIODS)
-            hass.services.async_remove(DOMAIN, SERVICE_SET_DEVICE_SETTING)
+            hass.services.async_remove(DOMAIN, LEGACY_SERVICE_SET_CHARGE_PERIODS)
     return unload_ok
 
 
@@ -89,35 +88,6 @@ def _register_services(hass: HomeAssistant) -> None:
             min_soc=call.data.get("min_soc"),
             min_soc_on_grid=call.data.get("min_soc_on_grid"),
         )
-
-    async def async_handle_set_charge_periods(call: ServiceCall) -> None:
-        coordinator = _find_coordinator(hass, call.data["device_sn"])
-        if any(key in call.data for key in ("charge_from_grid1", "start_time1", "end_time1")):
-            await coordinator.async_set_charge_period(
-                1,
-                charge_from_grid=call.data.get("charge_from_grid1"),
-                start=call.data.get("start_time1"),
-                end=call.data.get("end_time1"),
-            )
-        if any(key in call.data for key in ("charge_from_grid2", "start_time2", "end_time2")):
-            await coordinator.async_set_charge_period(
-                2,
-                charge_from_grid=call.data.get("charge_from_grid2"),
-                start=call.data.get("start_time2"),
-                end=call.data.get("end_time2"),
-            )
-
-    async def async_handle_set_device_setting(call: ServiceCall) -> None:
-        coordinator = _find_coordinator(hass, call.data["device_sn"])
-        runtime_data = hass.data[DOMAIN][coordinator.config_entry.entry_id]
-        api: FoxESSApiClient = runtime_data["api"]
-        await api.async_set_device_setting(
-            coordinator.device_sn,
-            call.data["key"],
-            call.data["value"],
-        )
-        await coordinator._async_refresh_control_settings()  # noqa: SLF001
-        coordinator.async_update_listeners()
 
     hass.services.async_register(
         DOMAIN,
@@ -133,36 +103,6 @@ def _register_services(hass: HomeAssistant) -> None:
             }
         ),
     )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SET_CHARGE_PERIODS,
-        async_handle_set_charge_periods,
-        schema=vol.Schema(
-            {
-                vol.Required("device_sn"): cv.string,
-                vol.Optional("charge_from_grid1"): cv.boolean,
-                vol.Optional("start_time1"): cv.time,
-                vol.Optional("end_time1"): cv.time,
-                vol.Optional("charge_from_grid2"): cv.boolean,
-                vol.Optional("start_time2"): cv.time,
-                vol.Optional("end_time2"): cv.time,
-            }
-        ),
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SET_DEVICE_SETTING,
-        async_handle_set_device_setting,
-        schema=vol.Schema(
-            {
-                vol.Required("device_sn"): cv.string,
-                vol.Required("key"): cv.string,
-                vol.Required("value"): object,
-            }
-        ),
-    )
-
-
 def _find_coordinator(
     hass: HomeAssistant,
     device_sn: str,

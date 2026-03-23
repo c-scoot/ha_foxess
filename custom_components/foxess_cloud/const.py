@@ -18,6 +18,10 @@ PLATFORMS: Final[list[Platform]] = [
     Platform.SENSOR,
     Platform.NUMBER,
     Platform.SELECT,
+]
+
+UNLOAD_PLATFORMS: Final[list[Platform]] = [
+    *PLATFORMS,
     Platform.SWITCH,
     Platform.TIME,
 ]
@@ -44,6 +48,14 @@ FORCE_CHARGE_TIME_GET_PATH: Final = "/op/v0/device/battery/forceChargeTime/get"
 FORCE_CHARGE_TIME_SET_PATH: Final = "/op/v0/device/battery/forceChargeTime/set"
 DEVICE_SETTING_SET_PATH: Final = "/op/v0/device/setting/set"
 DEVICE_SETTING_GET_PATH: Final = "/op/v0/device/setting/get"
+SCHEDULER_GET_FLAG_V1_PATH: Final = "/op/v1/device/scheduler/get/flag"
+SCHEDULER_SET_FLAG_V1_PATH: Final = "/op/v1/device/scheduler/set/flag"
+SCHEDULER_GET_FLAG_V0_PATH: Final = "/op/v0/device/scheduler/get/flag"
+SCHEDULER_SET_FLAG_V0_PATH: Final = "/op/v0/device/scheduler/set/flag"
+SCHEDULER_GET_V3_PATH: Final = "/op/v3/device/scheduler/get"
+SCHEDULER_GET_V2_PATH: Final = "/op/v2/device/scheduler/get"
+SCHEDULER_GET_V1_PATH: Final = "/op/v1/device/scheduler/get"
+SCHEDULER_GET_V0_PATH: Final = "/op/v0/device/scheduler/get"
 
 REAUTH_ERRORS: Final = {41808, 41809}
 AUTH_ERRORS: Final = {41807, *REAUTH_ERRORS}
@@ -61,5 +73,4 @@ REPORT_VARIABLES: Final[tuple[str, ...]] = (
 )
 
 SERVICE_SET_MIN_SOC: Final = "set_min_soc"
-SERVICE_SET_CHARGE_PERIODS: Final = "set_charge_periods"
-SERVICE_SET_DEVICE_SETTING: Final = "set_device_setting"
+LEGACY_SERVICE_SET_CHARGE_PERIODS: Final = "set_charge_periods"

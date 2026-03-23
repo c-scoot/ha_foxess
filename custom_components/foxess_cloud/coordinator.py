@@ -22,6 +22,7 @@ from .api import (
     FoxESSChargeTimeSettings,
     FoxESSDevice,
     FoxESSRateLimitError,
+    FoxESSApiUsageStats,
 )
 from .const import (
     DEFAULT_SCAN_INTERVAL,
@@ -44,6 +45,10 @@ class FoxESSCoordinatorData:
     battery_settings: FoxESSBatterySocSettings | None
     charge_time_settings: FoxESSChargeTimeSettings | None
     work_mode: str | None
+    scheduler_enabled: bool | None
+    scheduler_supported: bool | None
+    scheduler_snapshot: dict[str, Any] | None
+    api_usage: FoxESSApiUsageStats
     requested_at: datetime
 
 
@@ -76,6 +81,9 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         self._charge_time_settings: FoxESSChargeTimeSettings | None = None
         self._settings_fetched_at: datetime | None = None
         self._work_mode: str | None = None
+        self._scheduler_enabled: bool | None = None
+        self._scheduler_supported: bool | None = None
+        self._scheduler_snapshot: dict[str, Any] | None = None
         self._work_mode_fetched_at: datetime | None = None
 
     async def _async_update_data(self) -> FoxESSCoordinatorData:
@@ -135,6 +143,10 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             battery_settings=self._battery_settings,
             charge_time_settings=self._charge_time_settings,
             work_mode=self._work_mode,
+            scheduler_enabled=self._scheduler_enabled,
+            scheduler_supported=self._scheduler_supported,
+            scheduler_snapshot=self._scheduler_snapshot,
+            api_usage=self.api.get_daily_usage(self.device_sn),
             requested_at=now,
         )
 
@@ -155,13 +167,31 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         self._settings_fetched_at = now or dt_util.utcnow()
 
     async def _async_refresh_work_mode(self, now: datetime | None = None) -> None:
-        """Refresh the current work mode more frequently than other settings."""
+        """Refresh scheduler/work-mode state more frequently than other settings."""
+        try:
+            scheduler_flag = await self.api.async_get_scheduler_flag(self.device_sn)
+            self._scheduler_enabled = scheduler_flag.get("enable")
+            self._scheduler_supported = scheduler_flag.get("support")
+        except FoxESSApiError as err:
+            _LOGGER.debug("Scheduler flag unavailable for %s: %s", self.device_sn, err)
+
+        try:
+            self._scheduler_snapshot = await self.api.async_get_scheduler(self.device_sn)
+        except FoxESSApiError as err:
+            _LOGGER.debug("Scheduler snapshot unavailable for %s: %s", self.device_sn, err)
+
         try:
             self._work_mode = await self.api.async_get_work_mode(self.device_sn)
         except FoxESSApiError as err:
             _LOGGER.debug("Work mode unavailable for %s: %s", self.device_sn, err)
             self._work_mode = self._work_mode
         self._work_mode_fetched_at = now or dt_util.utcnow()
+
+    async def async_set_scheduler_enabled(self, enabled: bool) -> None:
+        """Enable or disable scheduler mode and refresh coordinator state."""
+        await self.api.async_set_scheduler_enabled(self.device_sn, enabled)
+        await self._async_refresh_work_mode()
+        self.async_update_listeners()
 
     async def async_set_battery_soc_settings(
         self,

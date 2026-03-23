@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import date, time as dt_time
+from datetime import date, datetime, time as dt_time
 import hashlib
 import logging
 import re
@@ -13,6 +13,7 @@ from typing import Any
 
 import aiohttp
 import async_timeout
+from homeassistant.util import dt as dt_util
 
 from .const import (
     API_BASE_URL,
@@ -33,6 +34,14 @@ from .const import (
     REALTIME_V1_PATH,
     REPORT_PATH,
     REPORT_VARIABLES,
+    SCHEDULER_GET_FLAG_V0_PATH,
+    SCHEDULER_GET_FLAG_V1_PATH,
+    SCHEDULER_GET_V0_PATH,
+    SCHEDULER_GET_V1_PATH,
+    SCHEDULER_GET_V2_PATH,
+    SCHEDULER_GET_V3_PATH,
+    SCHEDULER_SET_FLAG_V0_PATH,
+    SCHEDULER_SET_FLAG_V1_PATH,
     REQUEST_TIMEOUT_SECONDS,
     UPDATE_REQUEST_MIN_INTERVAL_SECONDS,
 )
@@ -42,6 +51,11 @@ _LOGGER = logging.getLogger(__name__)
 _CAMEL_CASE_PATTERN = re.compile(r"(?<!^)(?=[A-Z])")
 _PV_PATTERN = re.compile(r"^(pv)(\d+)(power|volt|voltage|current)$", re.IGNORECASE)
 _PHASE_PATTERN = re.compile(r"^([rst])(volt|current|power|freq)$", re.IGNORECASE)
+_WORK_MODE_SETTING_KEYS: tuple[str, ...] = ("WorkMode", "workMode")
+_WORK_MODE_OPTION_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "self_use": ("SelfUse", "SelfUseMode", "Self Use"),
+    "mode_scheduler": ("ModeScheduler", "Scheduler", "TimeMode", "Mode Scheduler"),
+}
 
 
 class FoxESSApiError(Exception):
@@ -96,6 +110,17 @@ class FoxESSChargeTimeSettings:
     period_2: FoxESSChargePeriod
 
 
+@dataclass(slots=True)
+class FoxESSApiUsageStats:
+    """Per-device daily API usage counters."""
+
+    day: date
+    calls: int = 0
+    errors: int = 0
+    last_called_at: datetime | None = None
+    last_error_at: datetime | None = None
+
+
 class FoxESSApiClient:
     """Wrapper around the FoxESS Cloud API."""
 
@@ -112,6 +137,7 @@ class FoxESSApiClient:
         self._use_detail_v1 = True
         self._path_locks: dict[str, asyncio.Lock] = {}
         self._last_request_started: dict[str, float] = {}
+        self._usage_by_device: dict[str, FoxESSApiUsageStats] = {}
 
     def _headers(self, path: str) -> dict[str, str]:
         timestamp = str(int(time.time() * 1000))
@@ -134,9 +160,13 @@ class FoxESSApiClient:
         path: str,
         payload: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        *,
+        log_request_errors: bool = True,
     ) -> dict[str, Any]:
         url = f"{self._base_url}{path}"
         await self._async_wait_for_rate_limit(path, method)
+        device_sn = _extract_device_sn(payload, params)
+        self._record_request(device_sn)
         _LOGGER.debug(
             "FoxESS request %s %s payload=%s params=%s",
             method,
@@ -155,8 +185,10 @@ class FoxESSApiClient:
                     params=params,
                 )
         except TimeoutError as err:
+            self._record_request_error(device_sn)
             raise FoxESSApiError("Timed out contacting FoxESS") from err
         except aiohttp.ClientError as err:
+            self._record_request_error(device_sn)
             raise FoxESSApiError("Unable to connect to FoxESS") from err
 
         try:
@@ -178,6 +210,7 @@ class FoxESSApiClient:
         )
 
         if response.status >= 400:
+            self._record_request_error(device_sn)
             _LOGGER.warning(
                 "FoxESS HTTP error on %s %s: status=%s msg=%s payload=%s params=%s",
                 method,
@@ -193,6 +226,7 @@ class FoxESSApiClient:
 
         errno = data.get("errno", 0)
         if errno in AUTH_ERRORS:
+            self._record_request_error(device_sn)
             _LOGGER.warning(
                 "FoxESS auth error on %s %s: errno=%s msg=%s payload=%s params=%s",
                 method,
@@ -204,7 +238,9 @@ class FoxESSApiClient:
             )
             raise FoxESSAuthenticationError(data.get("msg", "Authentication failed"), errno)
         if errno in REQUEST_ERRORS:
-            _LOGGER.warning(
+            self._record_request_error(device_sn)
+            log_fn = _LOGGER.warning if log_request_errors else _LOGGER.debug
+            log_fn(
                 "FoxESS request error on %s %s: errno=%s msg=%s payload=%s params=%s",
                 method,
                 path,
@@ -218,6 +254,7 @@ class FoxESSApiClient:
                 errno,
             )
         if errno in RATE_LIMIT_ERRORS:
+            self._record_request_error(device_sn)
             _LOGGER.warning(
                 "FoxESS rate limit on %s %s: errno=%s msg=%s",
                 method,
@@ -239,6 +276,35 @@ class FoxESSApiClient:
             raise FoxESSApiError(data.get("msg", "FoxESS API error"), errno)
 
         return data
+
+    def get_daily_usage(self, device_sn: str) -> FoxESSApiUsageStats:
+        """Return today's per-device API usage counters."""
+        return self._get_usage_bucket(device_sn)
+
+    def _record_request(self, device_sn: str | None) -> None:
+        """Record an outbound FoxESS request for a device, if identifiable."""
+        if device_sn is None:
+            return
+        usage = self._get_usage_bucket(device_sn)
+        usage.calls += 1
+        usage.last_called_at = dt_util.now()
+
+    def _record_request_error(self, device_sn: str | None) -> None:
+        """Record a failed FoxESS request for a device, if identifiable."""
+        if device_sn is None:
+            return
+        usage = self._get_usage_bucket(device_sn)
+        usage.errors += 1
+        usage.last_error_at = dt_util.now()
+
+    def _get_usage_bucket(self, device_sn: str) -> FoxESSApiUsageStats:
+        """Return the counter bucket for the current local day."""
+        today = dt_util.now().date()
+        usage = self._usage_by_device.get(device_sn)
+        if usage is None or usage.day != today:
+            usage = FoxESSApiUsageStats(day=today)
+            self._usage_by_device[device_sn] = usage
+        return usage
 
     async def _async_wait_for_rate_limit(self, path: str, method: str) -> None:
         """Honor FoxESS's per-interface rate limits."""
@@ -529,15 +595,29 @@ class FoxESSApiClient:
             },
         )
 
-    async def async_set_device_setting(self, device_sn: str, key: str, value: Any) -> None:
+    async def async_set_device_setting(
+        self,
+        device_sn: str,
+        key: str,
+        value: Any,
+        *,
+        log_request_errors: bool = True,
+    ) -> None:
         """Set a writable device setting by key."""
         await self._request(
             "POST",
             DEVICE_SETTING_SET_PATH,
             payload={"sn": device_sn, "key": key, "value": value},
+            log_request_errors=log_request_errors,
         )
 
-    async def async_get_device_setting(self, device_sn: str, key: str) -> Any:
+    async def async_get_device_setting(
+        self,
+        device_sn: str,
+        key: str,
+        *,
+        log_request_errors: bool = False,
+    ) -> Any:
         """Read a device setting by key, if the inverter exposes it."""
         requests: tuple[tuple[str, dict[str, Any] | None, dict[str, Any] | None], ...] = (
             ("GET", None, {"sn": device_sn, "key": key}),
@@ -547,7 +627,13 @@ class FoxESSApiClient:
 
         for method, payload, params in requests:
             try:
-                data = await self._request(method, DEVICE_SETTING_GET_PATH, payload=payload, params=params)
+                data = await self._request(
+                    method,
+                    DEVICE_SETTING_GET_PATH,
+                    payload=payload,
+                    params=params,
+                    log_request_errors=log_request_errors,
+                )
             except FoxESSApiError as err:
                 last_error = err
                 continue
@@ -564,32 +650,188 @@ class FoxESSApiClient:
         raise last_error or FoxESSApiError(f"Unable to read device setting: {key}")
 
     async def async_set_work_mode(self, device_sn: str, option_key: str) -> str:
-        """Set the inverter work mode using the most likely FoxESS payload values."""
-        candidates = {
-            "self_use": ("SelfUse", "SelfUseMode"),
-            "mode_scheduler": ("ModeScheduler", "Scheduler", "TimeMode"),
-        }.get(option_key)
+        """Set the inverter work mode using the most likely FoxESS keys and values."""
+        candidates = _WORK_MODE_OPTION_CANDIDATES.get(option_key)
         if candidates is None:
             raise FoxESSApiError(f"Unsupported work mode option: {option_key}")
 
         last_error: FoxESSApiError | None = None
-        for candidate in candidates:
-            try:
-                await self.async_set_device_setting(device_sn, "WorkMode", candidate)
-            except FoxESSApiError as err:
-                last_error = err
-                continue
-            return candidate
+        attempted_pairs: list[str] = []
+        for key in _WORK_MODE_SETTING_KEYS:
+            for candidate in candidates:
+                attempted_pairs.append(f"{key}={candidate}")
+                _LOGGER.debug(
+                    "Trying FoxESS work mode write for %s with key=%s value=%s",
+                    device_sn,
+                    key,
+                    candidate,
+                )
+                try:
+                    await self.async_set_device_setting(
+                        device_sn,
+                        key,
+                        candidate,
+                        log_request_errors=False,
+                    )
+                except FoxESSApiError as err:
+                    _LOGGER.debug(
+                        "FoxESS rejected work mode write for %s with key=%s value=%s errno=%s msg=%s",
+                        device_sn,
+                        key,
+                        candidate,
+                        err.errno,
+                        err,
+                    )
+                    last_error = err
+                    continue
 
-        raise last_error or FoxESSApiError(f"Unable to set work mode: {option_key}")
+                _LOGGER.info(
+                    "FoxESS accepted work mode write for %s with key=%s value=%s",
+                    device_sn,
+                    key,
+                    candidate,
+                )
+                return candidate
+
+        attempts = ", ".join(attempted_pairs)
+        if last_error is not None:
+            raise FoxESSApiError(
+                f"Unable to set work mode: {option_key}. Tried {attempts}. Last error: {last_error}",
+                last_error.errno,
+            ) from last_error
+        raise FoxESSApiError(f"Unable to set work mode: {option_key}. Tried {attempts}")
 
     async def async_get_work_mode(self, device_sn: str) -> str | None:
         """Return the current inverter work mode, if exposed."""
-        value = await self.async_get_device_setting(device_sn, "WorkMode")
-        if value is None:
-            return None
-        return str(value)
+        last_error: FoxESSApiError | None = None
 
+        for key in _WORK_MODE_SETTING_KEYS:
+            _LOGGER.debug("Trying FoxESS work mode read for %s with key=%s", device_sn, key)
+            try:
+                value = await self.async_get_device_setting(
+                    device_sn,
+                    key,
+                    log_request_errors=False,
+                )
+            except FoxESSApiError as err:
+                _LOGGER.debug(
+                    "FoxESS rejected work mode read for %s with key=%s errno=%s msg=%s",
+                    device_sn,
+                    key,
+                    err.errno,
+                    err,
+                )
+                last_error = err
+                continue
+
+            if value is None:
+                _LOGGER.debug("FoxESS work mode read returned empty result for %s with key=%s", device_sn, key)
+                continue
+
+            _LOGGER.debug(
+                "FoxESS work mode read succeeded for %s with key=%s value=%s",
+                device_sn,
+                key,
+                value,
+            )
+            return str(value)
+
+        if last_error is not None:
+            raise FoxESSApiError(
+                f"Unable to read work mode. Tried keys: {', '.join(_WORK_MODE_SETTING_KEYS)}. Last error: {last_error}",
+                last_error.errno,
+            ) from last_error
+        return None
+
+    async def async_get_scheduler_flag(self, device_sn: str) -> dict[str, Any]:
+        """Return scheduler support and enable status."""
+        requests = (
+            ("v1", SCHEDULER_GET_FLAG_V1_PATH),
+            ("v0", SCHEDULER_GET_FLAG_V0_PATH),
+        )
+        last_error: FoxESSApiError | None = None
+
+        for version, path in requests:
+            try:
+                data = await self._request("POST", path, payload={"deviceSN": device_sn}, log_request_errors=False)
+            except FoxESSApiError as err:
+                last_error = err
+                continue
+
+            result = data.get("result") or {}
+            if not isinstance(result, dict):
+                return {"version": version, "support": None, "enable": None}
+            return {
+                "version": version,
+                "support": _coerce_boolish(result.get("support")) if "support" in result else None,
+                "enable": _coerce_boolish(result.get("enable")) if "enable" in result else None,
+                "raw": result,
+            }
+
+        raise last_error or FoxESSApiError("Unable to read scheduler flag")
+
+    async def async_set_scheduler_enabled(self, device_sn: str, enabled: bool) -> str:
+        """Enable or disable scheduler mode."""
+        requests = (
+            ("v1", SCHEDULER_SET_FLAG_V1_PATH),
+            ("v0", SCHEDULER_SET_FLAG_V0_PATH),
+        )
+        last_error: FoxESSApiError | None = None
+
+        for version, path in requests:
+            try:
+                await self._request(
+                    "POST",
+                    path,
+                    payload={"deviceSN": device_sn, "enable": int(enabled)},
+                    log_request_errors=False,
+                )
+            except FoxESSApiError as err:
+                _LOGGER.debug(
+                    "FoxESS rejected scheduler flag write for %s with version=%s enable=%s errno=%s msg=%s",
+                    device_sn,
+                    version,
+                    enabled,
+                    err.errno,
+                    err,
+                )
+                last_error = err
+                continue
+
+            _LOGGER.info(
+                "FoxESS accepted scheduler flag write for %s with version=%s enable=%s",
+                device_sn,
+                version,
+                enabled,
+            )
+            return version
+
+        raise last_error or FoxESSApiError(f"Unable to set scheduler enabled={enabled}")
+
+    async def async_get_scheduler(self, device_sn: str) -> dict[str, Any]:
+        """Return scheduler groups using the newest supported API version."""
+        requests = (
+            ("v3", SCHEDULER_GET_V3_PATH),
+            ("v2", SCHEDULER_GET_V2_PATH),
+            ("v1", SCHEDULER_GET_V1_PATH),
+            ("v0", SCHEDULER_GET_V0_PATH),
+        )
+        last_error: FoxESSApiError | None = None
+
+        for version, path in requests:
+            try:
+                data = await self._request("POST", path, payload={"deviceSN": device_sn}, log_request_errors=False)
+            except FoxESSApiError as err:
+                last_error = err
+                continue
+
+            result = data.get("result")
+            return {
+                "version": version,
+                "result": result,
+            }
+
+        raise last_error or FoxESSApiError("Unable to read scheduler groups")
 
 def normalize_key(key: str) -> str:
     """Normalize API variable names to a stable snake_case key."""
@@ -597,12 +839,28 @@ def normalize_key(key: str) -> str:
         "SoC": "battery_soc",
         "SoC1": "battery_soc_1",
         "SoC2": "battery_soc_2",
+        "SOC": "battery_soc",
+        "SOC1": "battery_soc_1",
+        "SOC2": "battery_soc_2",
+        "soc": "battery_soc",
+        "soc1": "battery_soc_1",
+        "soc2": "battery_soc_2",
         "SoH": "battery_soh",
         "SoH1": "battery_soh_1",
         "SoH2": "battery_soh_2",
+        "SOH": "battery_soh",
+        "SOH1": "battery_soh_1",
+        "SOH2": "battery_soh_2",
+        "soh": "battery_soh",
+        "soh1": "battery_soh_1",
+        "soh2": "battery_soh_2",
         "PVEnergyTotal": "pv_energy_total",
         "chargeEnergyToTal": "charge_energy_total",
         "dischargeEnergyToTal": "discharge_energy_total",
+        "batChargePower": "charge_power",
+        "batDischargePower": "discharge_power",
+        "invTemperation": "inverter_temperature",
+        "batTemperation": "battery_temperature",
     }
     if key in aliases:
         return aliases[key]
@@ -639,7 +897,9 @@ def prettify_key(key: str) -> str:
         "loadsPower": "Load Power",
         "loads": "Total Load Consumption",
         "chargePower": "Battery Charge Power",
+        "batChargePower": "Battery Charge Power",
         "dischargePower": "Battery Discharge Power",
+        "batDischargePower": "Battery Discharge Power",
         "chargeEnergyToTal": "Total Battery Charged",
         "dischargeEnergyToTal": "Total Battery Discharged",
         "energyThroughput": "Battery Throughput",
@@ -649,18 +909,23 @@ def prettify_key(key: str) -> str:
         "SoH": "Battery SOH",
         "SoH1": "Battery SOH 1",
         "SoH2": "Battery SOH 2",
+        "SOH": "Battery SOH",
+        "SOH1": "Battery SOH 1",
+        "SOH2": "Battery SOH 2",
         "invBatPower": "Battery Net Power",
         "invBatPower2": "Battery Net Power 2",
         "meterPower2": "Meter 2 Power",
         "residualEnergy": "Residual Energy",
-        "minSoc": "Minimum SOC",
-        "minSocOnGrid": "Cut-Off SOC",
+        "minSoc": "System Minimum SOC",
+        "minSocOnGrid": "Battery Cut-Off SOC",
         "runningState": "Running State",
         "powerFactor": "Power Factor",
         "ambientTemp": "Ambient Temperature",
         "boostTemp": "Boost Temperature",
         "invTemp": "Inverter Temperature",
+        "invTemperation": "Inverter Temperature",
         "batTemperature": "Battery Temperature",
+        "batTemperation": "Battery Temperature",
         "batTemperature2": "Battery Temperature 2",
         "maxChargeCurrent": "Max Battery Charge Current",
         "maxDischargeCurrent": "Max Battery Discharge Current",
@@ -762,3 +1027,24 @@ def _sanitize_mapping(mapping: dict[str, Any] | None) -> dict[str, Any] | None:
         else:
             redacted[key] = value
     return redacted
+
+
+def _extract_device_sn(
+    payload: dict[str, Any] | None,
+    params: dict[str, Any] | None,
+) -> str | None:
+    """Extract a single device serial number from common FoxESS request shapes."""
+    for mapping in (payload, params):
+        if not isinstance(mapping, dict):
+            continue
+
+        for key in ("sn", "deviceSN", "deviceSn"):
+            value = mapping.get(key)
+            if isinstance(value, str) and value:
+                return value
+
+        sns = mapping.get("sns")
+        if isinstance(sns, list) and len(sns) == 1 and isinstance(sns[0], str) and sns[0]:
+            return sns[0]
+
+    return None

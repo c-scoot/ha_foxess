@@ -24,10 +24,11 @@ from homeassistant.const import (
     UnitOfTemperature,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -36,6 +37,19 @@ from .const import DOMAIN
 from .coordinator import FoxESSDataUpdateCoordinator
 
 _PV_STRING_POWER_KEY_PATTERN = re.compile(r"^pv_(\d+)_power$")
+_RUNNING_STATE_LABELS: dict[int, str] = {
+    160: "Self-Test",
+    161: "Waiting",
+    162: "Checking",
+    163: "On-Grid",
+    164: "Off-Grid",
+    165: "Fault",
+    166: "Permanent Fault",
+    167: "Standby",
+    168: "Upgrading",
+    169: "FCT",
+    170: "Illegal",
+}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -44,6 +58,7 @@ class FoxESSSensorDescription(SensorEntityDescription):
 
     source: str
     value_key: str
+    alternate_value_keys: tuple[str, ...] = ()
     entity_registry_enabled_default: bool = True
 
 
@@ -102,6 +117,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="charge_power",
         source="realtime",
         value_key="chargePower",
+        alternate_value_keys=("batChargePower",),
         name="Battery Charge Power",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
@@ -112,6 +128,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="discharge_power",
         source="realtime",
         value_key="dischargePower",
+        alternate_value_keys=("batDischargePower",),
         name="Battery Discharge Power",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
@@ -122,6 +139,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_soc",
         source="realtime",
         value_key="SoC",
+        alternate_value_keys=("SOC", "soc"),
         name="Battery SOC",
         device_class=SensorDeviceClass.BATTERY,
         native_unit_of_measurement=PERCENTAGE,
@@ -131,6 +149,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_soc_1",
         source="realtime",
         value_key="SoC1",
+        alternate_value_keys=("SOC1", "soc1"),
         name="Battery SOC 1",
         device_class=SensorDeviceClass.BATTERY,
         native_unit_of_measurement=PERCENTAGE,
@@ -141,6 +160,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_soc_2",
         source="realtime",
         value_key="SoC2",
+        alternate_value_keys=("SOC2", "soc2"),
         name="Battery SOC 2",
         device_class=SensorDeviceClass.BATTERY,
         native_unit_of_measurement=PERCENTAGE,
@@ -151,6 +171,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_soh",
         source="realtime",
         value_key="SoH",
+        alternate_value_keys=("SOH", "soh"),
         name="Battery SOH",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -311,6 +332,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="inverter_temperature",
         source="realtime",
         value_key="invTemp",
+        alternate_value_keys=("invTemperation",),
         name="Inverter Temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -321,6 +343,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_temperature",
         source="realtime",
         value_key="batTemperature",
+        alternate_value_keys=("batTemperation",),
         name="Battery Temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -452,6 +475,10 @@ def _build_entities_for_coordinator(
     coordinator: FoxESSDataUpdateCoordinator,
 ) -> list[SensorEntity]:
     entities: list[SensorEntity] = []
+    entities.append(FoxESSSchedulerSensor(coordinator))
+    entities.append(FoxESSAPICallsTodaySensor(coordinator))
+    entities.append(FoxESSGridNetPowerSensor(coordinator))
+    entities.append(FoxESSNonEPSLoadPowerSensor(coordinator))
 
     for description in KNOWN_REALTIME_DESCRIPTIONS.values():
         entities.append(FoxESSOpenAPISensor(coordinator, description))
@@ -462,7 +489,8 @@ def _build_entities_for_coordinator(
     seen_dynamic_keys = {
         normalize_key(entity.entity_description.value_key)
         for entity in entities
-        if entity.entity_description.source == "realtime"
+        if isinstance(entity, FoxESSOpenAPISensor)
+        and entity.entity_description.source == "realtime"
     }
 
     for raw_key, value in coordinator.data.realtime.items():
@@ -483,6 +511,198 @@ def _build_entities_for_coordinator(
             entities.append(FoxESSPVStringEnergySensor(coordinator, raw_key))
 
     return entities
+
+
+class FoxESSSchedulerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
+    """Read-only summary of the current FoxESS scheduler configuration."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Schedule Status"
+    _attr_icon = "mdi:calendar-clock"
+
+    def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_sn}_scheduler"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def available(self) -> bool:
+        return (
+            super().available
+            and (
+                self.coordinator.data.scheduler_supported is not None
+                or self.coordinator.data.scheduler_snapshot is not None
+            )
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        enabled = self.coordinator.data.scheduler_enabled
+        if enabled is True:
+            return "enabled"
+        if enabled is False:
+            return "disabled"
+        if self.coordinator.data.scheduler_supported is False:
+            return "unsupported"
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        snapshot = self.coordinator.data.scheduler_snapshot
+        attributes: dict[str, Any] = {
+            "scheduler_supported": self.coordinator.data.scheduler_supported,
+        }
+        if snapshot is None:
+            return attributes
+
+        result = snapshot.get("result")
+        groups = result.get("groups") if isinstance(result, dict) else None
+        properties = result.get("properties") if isinstance(result, dict) else None
+
+        attributes["api_version"] = snapshot.get("version")
+        if isinstance(result, dict):
+            attributes["max_group_count"] = result.get("maxGroupCount")
+            attributes["schedule_enabled"] = bool(result.get("enable")) if "enable" in result else None
+        if isinstance(groups, list):
+            attributes["group_count"] = len(groups)
+            attributes["groups"] = groups
+        if isinstance(properties, dict):
+            work_mode = properties.get("workmode")
+            if isinstance(work_mode, dict):
+                attributes["available_work_modes"] = work_mode.get("enumList")
+
+        return attributes
+
+
+class FoxESSGridNetPowerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
+    """Derived net grid power where import is positive and export is negative."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Grid Net Power"
+    _attr_icon = "mdi:transmission-tower"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_sn}_grid_net_power"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def native_value(self) -> float | None:
+        import_power = _coerce_power_value(
+            self.coordinator.data.realtime.get("gridConsumptionPower", {}).get("value")
+        )
+        export_power = _coerce_power_value(
+            self.coordinator.data.realtime.get("feedinPower", {}).get("value")
+        )
+
+        if import_power is None and export_power is None:
+            return None
+
+        return (import_power or 0.0) - (export_power or 0.0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "positive_direction": "importing_from_grid",
+            "negative_direction": "exporting_to_grid",
+            "import_source": "gridConsumptionPower",
+            "export_source": "feedinPower",
+        }
+
+
+class FoxESSAPICallsTodaySensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
+    """Daily FoxESS API request counter for this inverter."""
+
+    _attr_has_entity_name = True
+    _attr_name = "API Calls Today"
+    _attr_icon = "mdi:counter"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_sn}_api_calls_today"
+        self._attr_device_info = build_device_info(coordinator)
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh the diagnostic counter state at local midnight without polling FoxESS."""
+        await super().async_added_to_hass()
+
+        @callback
+        def _handle_midnight(_now: datetime) -> None:
+            self.async_write_ha_state()
+
+        self.async_on_remove(
+            async_track_time_change(
+                self.hass,
+                _handle_midnight,
+                hour=0,
+                minute=0,
+                second=0,
+            )
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._usage().calls
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        usage = self._usage()
+        return {
+            "date": usage.day.isoformat(),
+            "successful_calls": usage.calls - usage.errors,
+            "api_errors_today": usage.errors,
+            "last_api_call": usage.last_called_at,
+            "last_api_error": usage.last_error_at,
+        }
+
+    def _usage(self) -> Any:
+        """Return the current local-day usage bucket from the shared API client."""
+        return self.coordinator.api.get_daily_usage(self.coordinator.device_sn)
+
+
+class FoxESSNonEPSLoadPowerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
+    """Derived non-EPS load power where total load excludes EPS-backed load."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Non-EPS Load Power"
+    _attr_icon = "mdi:home-lightning-bolt-outline"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_sn}_non_eps_load_power"
+        self._attr_device_info = build_device_info(coordinator)
+
+    @property
+    def native_value(self) -> float | None:
+        total_load = _coerce_power_value(
+            self.coordinator.data.realtime.get("loadsPower", {}).get("value")
+        )
+        eps_load = _coerce_first_power_value(
+            self.coordinator.data.realtime,
+            "EPSPower",
+            "epsPower",
+        )
+
+        if total_load is None or eps_load is None:
+            return None
+
+        return round(max(total_load - eps_load, 0.0), 3)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "calculation": "loadsPower - EPSPower",
+            "total_load_source": "loadsPower",
+            "eps_load_source": "EPSPower",
+        }
 
 
 class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
@@ -518,17 +738,20 @@ class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sensor
             return getattr(data, description.value_key)
 
         source_data = data.realtime if description.source == "realtime" else data.report
-        item = source_data.get(description.value_key)
+        item = _find_source_item(source_data, description)
         if item is None:
             return None
-        return item.get("value")
+        value = item.get("value")
+        if description.value_key == "runningState":
+            return _translate_running_state(value)
+        return value
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         if self.entity_description.source != "realtime":
             return None
 
-        item = self.coordinator.data.realtime.get(self.entity_description.value_key)
+        item = _find_source_item(self.coordinator.data.realtime, self.entity_description)
         if item is None:
             return None
 
@@ -539,6 +762,10 @@ class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sensor
             attributes["api_name"] = item["name"]
         if item.get("time"):
             attributes["data_updated_at"] = item["time"]
+        if self.entity_description.value_key == "runningState":
+            code = _coerce_running_state_code(item.get("value"))
+            if code is not None:
+                attributes["code"] = code
         return attributes or None
 
 
@@ -676,6 +903,61 @@ def _build_pv_string_energy_name(source_key: str) -> str:
     if source_name.endswith(" Power"):
         source_name = source_name.removesuffix(" Power")
     return f"{source_name} Generated Energy"
+
+
+def _coerce_power_value(value: Any) -> float | None:
+    """Convert a power value to float when available."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_first_power_value(
+    realtime: dict[str, Any],
+    *keys: str,
+) -> float | None:
+    """Return the first available realtime power value from the supplied keys."""
+    for key in keys:
+        value = _coerce_power_value(realtime.get(key, {}).get("value"))
+        if value is not None:
+            return value
+    return None
+
+
+def _find_source_item(
+    source_data: dict[str, dict[str, Any]],
+    description: FoxESSSensorDescription,
+) -> dict[str, Any] | None:
+    """Return the first available API item for a curated sensor description."""
+    item = source_data.get(description.value_key)
+    if item is not None:
+        return item
+
+    for key in description.alternate_value_keys:
+        item = source_data.get(key)
+        if item is not None:
+            return item
+
+    return None
+
+
+def _coerce_running_state_code(value: Any) -> int | None:
+    """Convert running-state values to int where possible."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _translate_running_state(value: Any) -> str | Any:
+    """Convert FoxESS running-state codes into readable labels."""
+    code = _coerce_running_state_code(value)
+    if code is None:
+        return value
+    return _RUNNING_STATE_LABELS.get(code, f"Unknown ({code})")
 
 
 def build_dynamic_realtime_description(
