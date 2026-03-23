@@ -24,10 +24,11 @@ from homeassistant.const import (
     UnitOfTemperature,
     UnitOfTime,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -57,6 +58,7 @@ class FoxESSSensorDescription(SensorEntityDescription):
 
     source: str
     value_key: str
+    alternate_value_keys: tuple[str, ...] = ()
     entity_registry_enabled_default: bool = True
 
 
@@ -115,6 +117,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="charge_power",
         source="realtime",
         value_key="chargePower",
+        alternate_value_keys=("batChargePower",),
         name="Battery Charge Power",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
@@ -125,6 +128,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="discharge_power",
         source="realtime",
         value_key="dischargePower",
+        alternate_value_keys=("batDischargePower",),
         name="Battery Discharge Power",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
@@ -135,6 +139,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_soc",
         source="realtime",
         value_key="SoC",
+        alternate_value_keys=("SOC", "soc"),
         name="Battery SOC",
         device_class=SensorDeviceClass.BATTERY,
         native_unit_of_measurement=PERCENTAGE,
@@ -144,6 +149,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_soc_1",
         source="realtime",
         value_key="SoC1",
+        alternate_value_keys=("SOC1", "soc1"),
         name="Battery SOC 1",
         device_class=SensorDeviceClass.BATTERY,
         native_unit_of_measurement=PERCENTAGE,
@@ -154,6 +160,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_soc_2",
         source="realtime",
         value_key="SoC2",
+        alternate_value_keys=("SOC2", "soc2"),
         name="Battery SOC 2",
         device_class=SensorDeviceClass.BATTERY,
         native_unit_of_measurement=PERCENTAGE,
@@ -164,6 +171,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_soh",
         source="realtime",
         value_key="SoH",
+        alternate_value_keys=("SOH", "soh"),
         name="Battery SOH",
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
@@ -324,6 +332,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="inverter_temperature",
         source="realtime",
         value_key="invTemp",
+        alternate_value_keys=("invTemperation",),
         name="Inverter Temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -334,6 +343,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="battery_temperature",
         source="realtime",
         value_key="batTemperature",
+        alternate_value_keys=("batTemperation",),
         name="Battery Temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
@@ -617,13 +627,31 @@ class FoxESSAPICallsTodaySensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], 
         self._attr_unique_id = f"{coordinator.device_sn}_api_calls_today"
         self._attr_device_info = build_device_info(coordinator)
 
+    async def async_added_to_hass(self) -> None:
+        """Refresh the diagnostic counter state at local midnight without polling FoxESS."""
+        await super().async_added_to_hass()
+
+        @callback
+        def _handle_midnight(_now: datetime) -> None:
+            self.async_write_ha_state()
+
+        self.async_on_remove(
+            async_track_time_change(
+                self.hass,
+                _handle_midnight,
+                hour=0,
+                minute=0,
+                second=0,
+            )
+        )
+
     @property
     def native_value(self) -> int:
-        return self.coordinator.data.api_usage.calls
+        return self._usage().calls
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        usage = self.coordinator.data.api_usage
+        usage = self._usage()
         return {
             "date": usage.day.isoformat(),
             "successful_calls": usage.calls - usage.errors,
@@ -631,6 +659,10 @@ class FoxESSAPICallsTodaySensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], 
             "last_api_call": usage.last_called_at,
             "last_api_error": usage.last_error_at,
         }
+
+    def _usage(self) -> Any:
+        """Return the current local-day usage bucket from the shared API client."""
+        return self.coordinator.api.get_daily_usage(self.coordinator.device_sn)
 
 
 class FoxESSNonEPSLoadPowerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], SensorEntity):
@@ -706,7 +738,7 @@ class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sensor
             return getattr(data, description.value_key)
 
         source_data = data.realtime if description.source == "realtime" else data.report
-        item = source_data.get(description.value_key)
+        item = _find_source_item(source_data, description)
         if item is None:
             return None
         value = item.get("value")
@@ -719,7 +751,7 @@ class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sensor
         if self.entity_description.source != "realtime":
             return None
 
-        item = self.coordinator.data.realtime.get(self.entity_description.value_key)
+        item = _find_source_item(self.coordinator.data.realtime, self.entity_description)
         if item is None:
             return None
 
@@ -892,6 +924,23 @@ def _coerce_first_power_value(
         value = _coerce_power_value(realtime.get(key, {}).get("value"))
         if value is not None:
             return value
+    return None
+
+
+def _find_source_item(
+    source_data: dict[str, dict[str, Any]],
+    description: FoxESSSensorDescription,
+) -> dict[str, Any] | None:
+    """Return the first available API item for a curated sensor description."""
+    item = source_data.get(description.value_key)
+    if item is not None:
+        return item
+
+    for key in description.alternate_value_keys:
+        item = source_data.get(key)
+        if item is not None:
+            return item
+
     return None
 
 
