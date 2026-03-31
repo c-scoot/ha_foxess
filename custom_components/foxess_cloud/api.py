@@ -865,6 +865,15 @@ def normalize_key(key: str) -> str:
     if key in aliases:
         return aliases[key]
 
+    normalized_alias_key = key.replace("_", "").lower()
+    if normalized_alias_key in {
+        "ambienttemperature",
+        "ambienttemperation",
+        "ambianttemperature",
+        "ambianttemperation",
+    }:
+        return "ambient_temperature"
+
     pv_match = _PV_PATTERN.match(key)
     if pv_match:
         _, string_number, metric = pv_match.groups()
@@ -884,8 +893,8 @@ def normalize_key(key: str) -> str:
 def prettify_key(key: str) -> str:
     """Convert API variable names to a readable entity name."""
     pretty_names = {
-        "generationPower": "Generation Power",
-        "generation": "Total Generation",
+        "generationPower": "Inverter Output Power",
+        "generation": "Total Inverter Output Energy",
         "PVEnergyTotal": "Total PV Energy",
         "pvPower": "PV Power",
         "feedinPower": "Feed-in Power",
@@ -920,12 +929,16 @@ def prettify_key(key: str) -> str:
         "minSocOnGrid": "Battery Cut-Off SOC",
         "runningState": "Running State",
         "powerFactor": "Power Factor",
-        "ambientTemp": "Ambient Temperature",
+        "ambientTemp": "Inverter Internal Temperature",
+        "ambientTemperature": "Inverter Internal Temperature",
+        "ambientTemperation": "Inverter Internal Temperature",
+        "ambiantTemperature": "Inverter Internal Temperature",
+        "ambiantTemperation": "Inverter Internal Temperature",
         "boostTemp": "Boost Temperature",
         "invTemp": "Inverter Temperature",
         "invTemperation": "Inverter Temperature",
-        "batTemperature": "Battery Temperature",
-        "batTemperation": "Battery Temperature",
+        "batTemperature": "Battery BMS Temperature",
+        "batTemperation": "Battery BMS Temperature",
         "batTemperature2": "Battery Temperature 2",
         "maxChargeCurrent": "Max Battery Charge Current",
         "maxDischargeCurrent": "Max Battery Discharge Current",

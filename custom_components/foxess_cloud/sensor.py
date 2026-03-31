@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 import re
 from typing import Any
 
@@ -31,6 +31,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .api import normalize_key, prettify_key
 from .const import DOMAIN
@@ -50,6 +51,26 @@ _RUNNING_STATE_LABELS: dict[int, str] = {
     169: "FCT",
     170: "Illegal",
 }
+_SEMANTIC_HINTS: dict[str, dict[str, Any]] = {
+    "generation_power": {
+        "measurement_scope": "inverter_output",
+        "preferred_pv_alternative": "PV Power",
+    },
+    "generation": {
+        "measurement_scope": "inverter_output_energy_total",
+        "preferred_pv_alternative": "Total PV Energy",
+    },
+    "daily_generation": {
+        "measurement_scope": "inverter_output_energy_today",
+        "preferred_pv_alternative": "Daily PV Energy Total",
+    },
+    "ambient_temperature": {
+        "measurement_scope": "inverter_internal_temperature",
+    },
+    "battery_temperature": {
+        "measurement_scope": "battery_bms_temperature",
+    },
+}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -67,7 +88,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="generation_power",
         source="realtime",
         value_key="generationPower",
-        name="Generation Power",
+        name="Inverter Output Power",
         device_class=SensorDeviceClass.POWER,
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -202,7 +223,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="generation",
         source="realtime",
         value_key="generation",
-        name="Total Generation",
+        name="Total Inverter Output Energy",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -312,7 +333,13 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="ambient_temperature",
         source="realtime",
         value_key="ambientTemp",
-        name="Ambient Temperature",
+        alternate_value_keys=(
+            "ambientTemperature",
+            "ambientTemperation",
+            "ambiantTemperature",
+            "ambiantTemperation",
+        ),
+        name="Inverter Internal Temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
@@ -344,7 +371,7 @@ KNOWN_REALTIME_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         source="realtime",
         value_key="batTemperature",
         alternate_value_keys=("batTemperation",),
-        name="Battery Temperature",
+        name="Battery BMS Temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         state_class=SensorStateClass.MEASUREMENT,
@@ -386,7 +413,7 @@ KNOWN_REPORT_DESCRIPTIONS: dict[str, FoxESSSensorDescription] = {
         key="daily_generation",
         source="report",
         value_key="generation",
-        name="Daily Generation",
+        name="Daily Inverter Output Energy",
         device_class=SensorDeviceClass.ENERGY,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         state_class=SensorStateClass.TOTAL_INCREASING,
@@ -509,6 +536,7 @@ def _build_entities_for_coordinator(
         normalized_key = normalize_key(raw_key)
         if _PV_STRING_POWER_KEY_PATTERN.match(normalized_key) and value.get("unit") == "kW":
             entities.append(FoxESSPVStringEnergySensor(coordinator, raw_key))
+            entities.append(FoxESSPVStringEnergySensor(coordinator, raw_key, daily=True))
 
     return entities
 
@@ -766,6 +794,7 @@ class FoxESSOpenAPISensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sensor
             code = _coerce_running_state_code(item.get("value"))
             if code is not None:
                 attributes["code"] = code
+        attributes.update(_SEMANTIC_HINTS.get(self.entity_description.key, {}))
         return attributes or None
 
 
@@ -785,19 +814,24 @@ class FoxESSPVStringEnergySensor(
         self,
         coordinator: FoxESSDataUpdateCoordinator,
         source_key: str,
+        *,
+        daily: bool = False,
     ) -> None:
         """Initialize the derived PV string energy sensor."""
         super().__init__(coordinator)
+        self._daily = daily
         self._source_key = source_key
         self._source_normalized_key = normalize_key(source_key)
+        suffix = "generated_energy_today" if daily else "generated_energy"
         self._attr_unique_id = (
-            f"{coordinator.device_sn}_{self._source_normalized_key.removesuffix('_power')}_generated_energy"
+            f"{coordinator.device_sn}_{self._source_normalized_key.removesuffix('_power')}_{suffix}"
         )
         self._attr_device_info = build_device_info(coordinator)
-        self._attr_name = _build_pv_string_energy_name(source_key)
+        self._attr_name = _build_pv_string_energy_name(source_key, daily=daily)
         self._native_value: float = 0.0
         self._last_power_kw: float | None = None
         self._last_sample_at: datetime | None = None
+        self._last_reset_day: date | None = None
 
     async def async_added_to_hass(self) -> None:
         """Restore the previous total, then resume integrating from now."""
@@ -805,11 +839,37 @@ class FoxESSPVStringEnergySensor(
 
         if (last_state := await self.async_get_last_state()) is not None:
             try:
-                self._native_value = float(last_state.state)
+                restored_value = float(last_state.state)
             except (TypeError, ValueError):
-                self._native_value = 0.0
+                restored_value = 0.0
+            if (
+                not self._daily
+                or last_state.attributes.get("last_reset_local_date") == self._current_local_day().isoformat()
+            ):
+                self._native_value = restored_value
+                if self._daily:
+                    self._last_reset_day = self._current_local_day()
 
         self._reset_integration_window()
+
+        if self._daily:
+            @callback
+            def _handle_midnight(now: datetime) -> None:
+                self._native_value = 0.0
+                self._last_reset_day = now.date()
+                self._last_power_kw = self._get_current_power_kw()
+                self._last_sample_at = dt_util.as_utc(now) if self._last_power_kw is not None else None
+                self.async_write_ha_state()
+
+            self.async_on_remove(
+                async_track_time_change(
+                    self.hass,
+                    _handle_midnight,
+                    hour=0,
+                    minute=0,
+                    second=0,
+                )
+            )
 
     @property
     def available(self) -> bool:
@@ -824,14 +884,23 @@ class FoxESSPVStringEnergySensor(
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Expose the source realtime metric for traceability."""
-        return {
+        attributes: dict[str, Any] = {
             "source_power_key": self._source_normalized_key,
         }
+        if self._daily:
+            attributes["reset_schedule"] = "local_midnight"
+            attributes["last_reset_local_date"] = (
+                self._last_reset_day.isoformat() if self._last_reset_day is not None else None
+            )
+        return attributes
 
     def _handle_coordinator_update(self) -> None:
         """Update the cumulative total from the latest power sample."""
         current_power_kw = self._get_current_power_kw()
         current_sample_at = self.coordinator.data.requested_at
+
+        if self._daily:
+            self._maybe_reset_for_new_day(current_sample_at)
 
         if (
             current_power_kw is not None
@@ -866,10 +935,26 @@ class FoxESSPVStringEnergySensor(
 
     def _reset_integration_window(self) -> None:
         """Start a new integration window from the current coordinator sample."""
+        if self._daily:
+            self._last_reset_day = self._current_local_day()
         self._last_power_kw = self._get_current_power_kw()
         self._last_sample_at = (
             self.coordinator.data.requested_at if self._last_power_kw is not None else None
         )
+
+    def _maybe_reset_for_new_day(self, current_sample_at: datetime) -> None:
+        """Reset the daily counter when the local day rolls over."""
+        current_day = dt_util.as_local(current_sample_at).date()
+        if self._last_reset_day == current_day:
+            return
+        self._native_value = 0.0
+        self._last_reset_day = current_day
+        self._last_power_kw = self._get_current_power_kw()
+        self._last_sample_at = current_sample_at if self._last_power_kw is not None else None
+
+    def _current_local_day(self) -> date:
+        """Return the current Home Assistant local day."""
+        return dt_util.as_local(self.coordinator.data.requested_at).date()
 
 
 def build_device_info(coordinator: FoxESSDataUpdateCoordinator) -> DeviceInfo:
@@ -897,12 +982,13 @@ def build_device_info(coordinator: FoxESSDataUpdateCoordinator) -> DeviceInfo:
     )
 
 
-def _build_pv_string_energy_name(source_key: str) -> str:
+def _build_pv_string_energy_name(source_key: str, *, daily: bool = False) -> str:
     """Return a friendly name for a derived PV string energy sensor."""
     source_name = prettify_key(source_key)
     if source_name.endswith(" Power"):
         source_name = source_name.removesuffix(" Power")
-    return f"{source_name} Generated Energy"
+    suffix = "Generated Energy Today" if daily else "Generated Energy"
+    return f"{source_name} {suffix}"
 
 
 def _coerce_power_value(value: Any) -> float | None:

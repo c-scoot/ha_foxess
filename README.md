@@ -13,7 +13,7 @@ Custom Home Assistant integration for FoxESS systems using the official FoxESS c
   - Home load
   - Battery charge, discharge, SOC, temperatures, and related metrics
 - Separates instantaneous power, daily report totals, and cumulative/lifetime counters so similarly named FoxESS values are easier to interpret.
-- Adds writable controls for battery reserve and force-charge periods when the inverter exposes those endpoints.
+- Adds writable controls for battery reserve and scheduler enable/disable when the inverter exposes the required APIs.
 - Publishes daily energy counters suitable for Home Assistant long-term statistics and the Energy dashboard.
 
 ## Refresh strategy
@@ -40,7 +40,7 @@ FoxESS does not publish a per-variable cadence table in the Open API docs, but t
 FoxESS exposes a few families of values that look similar but mean different things:
 
 - `*_power` realtime sensors are instantaneous power values from the realtime endpoint, for example `Feed-in Power`, `Grid Consumption Power`, `Load Power`, and per-string PV power.
-- Per-string `PV X Generated Energy` sensors are derived locally by integrating each `PV X Power` reading over time. They are intended for Home Assistant statistics and Energy dashboard use when you want to track strings individually.
+- Per-string `PV X Generated Energy` sensors are derived locally by integrating each `PV X Power` reading over time. Matching `PV X Generated Energy Today` sensors reset at local midnight so you can track each string's current-day production alongside the lifetime-style total.
 - `daily_*` sensors come from the report endpoint and represent the current day's energy totals in the plant's timezone. These are the sensors intended for Home Assistant statistics and the Energy dashboard.
 - Realtime `kWh` counters such as `Total Feed-in`, `Total Grid Consumption`, `Total Load Consumption`, `Total Battery Charged`, and `Total Battery Discharged` are cumulative counters from the realtime variable table, not daily totals.
 - `feedin2` and `gridConsumption2` are the cumulative import/export counters for a secondary meter. They are not duplicates of the main grid counters, even though the names are similar.
@@ -68,13 +68,13 @@ The integration now uses a curated-first sensor model:
 
 The curated sensors currently include:
 
-- Core realtime power sensors such as `Generation Power`, `PV Power`, `Feed-in Power`, `Grid Consumption Power`, and `Load Power`
+- Core realtime power sensors such as `Inverter Output Power`, `PV Power`, `Feed-in Power`, `Grid Consumption Power`, and `Load Power`
 - Battery power sensors such as `Battery Charge Power`, `Battery Discharge Power`, and `Battery Net Power`
 - Battery state sensors such as `Battery SOC`, optional secondary SOC sensors, and `Battery SOH`
 - Realtime totals such as `Total Feed-in`, `Total Grid Consumption`, `Total Load Consumption`, `Total Battery Charged`, `Total Battery Discharged`, and `Battery Throughput`
-- Thermal and state sensors such as `Ambient Temperature`, `Boost Temperature`, `Inverter Temperature`, `Battery Temperature`, `Battery Temperature 2`, `Running State`, and `Power Factor`
-- Daily report sensors such as `Daily Generation`, `Daily PV Energy Total`, `Daily Feed-in`, `Daily Grid Consumption`, `Daily Load Consumption`, `Daily Battery Charged`, and `Daily Battery Discharged`
-- Derived sensors such as `Battery Net Power`, `Grid Net Power`, `Non-EPS Load Power`, per-string `PV X Generated Energy`, and the read-only `Schedule Status`
+- Thermal and state sensors such as `Inverter Internal Temperature`, `Boost Temperature`, `Inverter Temperature`, `Battery BMS Temperature`, `Battery Temperature 2`, `Running State`, and `Power Factor`
+- Daily report sensors such as `Daily Inverter Output Energy`, `Daily PV Energy Total`, `Daily Feed-in`, `Daily Grid Consumption`, `Daily Load Consumption`, `Daily Battery Charged`, and `Daily Battery Discharged`
+- Derived sensors such as `Battery Net Power`, `Grid Net Power`, `Non-EPS Load Power`, per-string `PV X Generated Energy`, per-string `PV X Generated Energy Today`, and the read-only `Schedule Status`
 - Diagnostic sensors such as `Last Successful Update` and `API Calls Today`
 
 What happens when FoxESS exposes other fields:
@@ -84,7 +84,7 @@ What happens when FoxESS exposes other fields:
 - If FoxESS exposes a key but does not populate a value for your inverter, the entity may exist but remain unavailable.
 - Disabled-by-default entities are optional or model-dependent. Enabling them does not guarantee your inverter or FoxESS account will return a value.
 
-This means some FoxESS models will still show a few extra dynamically discovered sensors, but the integration aims to keep the main user-facing entities stable, readable, and free from obvious duplicate names like raw `SOH` or typo-based `Inv Temperation` variants.
+This means some FoxESS models will still show a few extra dynamically discovered sensors, but the integration aims to keep the main user-facing entities stable, readable, and free from obvious duplicate names like raw `SOH`, typo-based `Inv Temperation` variants, or ambient typo variants such as `Ambiant Temperation`.
 
 ## Signing notes
 
@@ -113,9 +113,13 @@ Recommended entity mapping:
 
 If your inverter/account does not expose `daily_pv_energy_total`, use `daily_generation` as the solar production fallback.
 
-For individual PV strings, use the new derived entities such as `sensor.<device>_pv_1_generated_energy` and `sensor.<device>_pv_2_generated_energy` as separate solar sources.
+For individual PV strings, use the derived entities such as `sensor.<device>_pv_1_generated_energy` and `sensor.<device>_pv_2_generated_energy` for cumulative tracking, or the new `sensor.<device>_pv_1_generated_energy_today` and `sensor.<device>_pv_2_generated_energy_today` sensors when you want same-day per-string production.
 
-`daily_pv_energy_total` is preferred for solar production because FoxESS added `PVEnergyTotal` specifically as PV generation data in the report API. `generation` appears to be the broader inverter generation/yield metric. That part is an inference from the official changelog and endpoint naming rather than an explicit FoxESS note.
+`daily_pv_energy_total` is preferred for solar production because FoxESS added `PVEnergyTotal` specifically as PV generation data in the report API. `generation` appears to be the broader inverter output or yield metric, so the integration now labels it as `Daily Inverter Output Energy` to make that distinction clearer. That part is still an inference from FoxESS naming and community validation rather than an explicit FoxESS engineering note.
+
+`ambientTemp` is named by FoxESS as though it were room ambient, but community testing suggests it is closer to the inverter's internal temperature. The integration now labels that sensor as `Inverter Internal Temperature` for clarity.
+
+`batTemperature` is exposed by FoxESS as battery temperature, but on some systems it appears to reflect the battery BMS or pack-internal temperature rather than the colder cell temperature shown elsewhere in the Fox app. The integration now labels it as `Battery BMS Temperature` so it is less likely to be mistaken for the app's pack or cell reading.
 
 Do not use the realtime cumulative `Total ...` counters in the Energy dashboard when a `daily_*` report sensor is available; they are different classes of data.
 
@@ -141,6 +145,7 @@ When supported by your inverter, the integration exposes:
 - `Battery Cut-Off SOC` maps to FoxESS `minSocOnGrid`, the battery reserve used while grid-connected.
 
 The older Open API force-charge window controls are intentionally no longer exposed in Home Assistant, because on newer FoxESS models they are superseded by the full FoxCloud `Mode Scheduler`.
+If you used those entities in older builds, plan to update any dashboards or automations that referenced them.
 
 For the `0.1.0` release, the intended workflow is:
 
@@ -148,7 +153,7 @@ For the `0.1.0` release, the intended workflow is:
 - use the Home Assistant `Work Mode` select to switch between `Self-use` and `Mode Scheduler`
 
 This keeps Home Assistant focused on arming or disarming the scheduler without trying to replicate FoxESS' full schedule editor.
-For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler switch-status API rather than by writing `WorkMode=Scheduler`, so the Home Assistant select now enables or disables the scheduler directly and uses `WorkMode` only as supporting context.
+For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler switch-status API rather than by writing `WorkMode=Scheduler`, so the Home Assistant select enables or disables the scheduler directly and uses `WorkMode` only as supporting context.
 The `Schedule Status` sensor is intentionally read-only for now and exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
 For dashboards and statistics, prefer the native `Battery Net Power` and `Grid Net Power` sensors over helper-created net-power entities, because the native sensors keep a stable unit definition in the integration.
 `Non-EPS Load Power` is derived as `Load Power - EPS Power`, which matches the FoxESS split between total load, EPS-backed load, and the remainder that is not on the EPS output.
