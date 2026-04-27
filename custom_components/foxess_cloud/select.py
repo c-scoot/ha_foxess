@@ -12,20 +12,23 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .api import normalize_work_mode_option_key
 from .const import DOMAIN
 from .coordinator import FoxESSDataUpdateCoordinator
 from .sensor import build_device_info
 
 OPTION_SELF_USE: Final = "Self-use"
+OPTION_FEED_IN_PRIORITY: Final = "Feed-in Priority"
+OPTION_BACKUP: Final = "Backup"
 OPTION_MODE_SCHEDULER: Final = "Mode Scheduler"
-
-_API_VALUE_TO_OPTION: Final[dict[str, str]] = {
-    "selfuse": OPTION_SELF_USE,
-    "selfusemode": OPTION_SELF_USE,
-    "modescheduler": OPTION_MODE_SCHEDULER,
-    "scheduler": OPTION_MODE_SCHEDULER,
-    "timemode": OPTION_MODE_SCHEDULER,
+_OPTION_TO_KEY: Final[dict[str, str]] = {
+    OPTION_SELF_USE: "self_use",
+    OPTION_FEED_IN_PRIORITY: "feed_in_priority",
+    OPTION_BACKUP: "backup",
+    OPTION_MODE_SCHEDULER: "mode_scheduler",
 }
+_OPTION_KEY_TO_OPTION: Final[dict[str, str]] = {value: key for key, value in _OPTION_TO_KEY.items()}
+_OPTION_ORDER: Final[tuple[str, ...]] = tuple(_OPTION_TO_KEY)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -38,7 +41,7 @@ SELECT_DESCRIPTIONS: tuple[FoxESSSelectDescription, ...] = (
         key="work_mode",
         name="Work Mode",
         icon="mdi:tune-variant",
-        options=[OPTION_SELF_USE, OPTION_MODE_SCHEDULER],
+        options=list(_OPTION_ORDER),
     ),
 )
 
@@ -63,7 +66,7 @@ class FoxESSWorkModeSelect(
     RestoreEntity,
     SelectEntity,
 ):
-    """A best-effort work mode selector."""
+    """A best-effort work mode selector with scheduler-aware handling."""
 
     entity_description: FoxESSSelectDescription
     _attr_has_entity_name = True
@@ -89,21 +92,23 @@ class FoxESSWorkModeSelect(
         if (last_state := await self.async_get_last_state()) is None:
             return
 
-        if last_state.state in self.options:
+        if last_state.state in _OPTION_TO_KEY:
             self._current_option = last_state.state
+
+    @property
+    def options(self) -> list[str]:
+        return [option for option in _OPTION_ORDER if _OPTION_TO_KEY[option] in self._available_option_keys()]
 
     @property
     def current_option(self) -> str | None:
         return self._current_option or self._infer_current_option()
 
     async def async_select_option(self, option: str) -> None:
-        if option not in self.options:
+        option_key = _OPTION_TO_KEY.get(option)
+        if option_key is None or option not in self.options:
             raise ValueError(f"Unsupported option: {option}")
 
-        if option == OPTION_MODE_SCHEDULER:
-            await self.coordinator.async_set_scheduler_enabled(True)
-        else:
-            await self.coordinator.async_set_scheduler_enabled(False)
+        await self.coordinator.async_set_work_mode(option_key)
         self._current_option = option
         self.async_write_ha_state()
 
@@ -115,24 +120,47 @@ class FoxESSWorkModeSelect(
     def _infer_current_option(self) -> str | None:
         if self.coordinator.data.scheduler_enabled is True:
             return OPTION_MODE_SCHEDULER
-        if self.coordinator.data.scheduler_enabled is False:
-            return OPTION_SELF_USE
 
-        for candidate in (
+        for candidate in self._reported_work_mode_values():
+            option_key = normalize_work_mode_option_key(candidate)
+            if option_key is None or option_key == "mode_scheduler":
+                continue
+            return _OPTION_KEY_TO_OPTION[option_key]
+        return None
+
+    def _available_option_keys(self) -> set[str]:
+        option_keys = {"self_use", "mode_scheduler"}
+        has_explicit_enum_list = False
+        snapshot = self.coordinator.data.scheduler_snapshot
+        result = snapshot.get("result") if isinstance(snapshot, dict) else None
+        properties = result.get("properties") if isinstance(result, dict) else None
+        work_mode = properties.get("workMode") if isinstance(properties, dict) else None
+        if not isinstance(work_mode, dict) and isinstance(properties, dict):
+            work_mode = properties.get("workmode")
+
+        if isinstance(work_mode, dict):
+            enum_list = work_mode.get("enumList")
+            if isinstance(enum_list, list):
+                has_explicit_enum_list = True
+                for raw_value in enum_list:
+                    option_key = normalize_work_mode_option_key(raw_value)
+                    if option_key is not None:
+                        option_keys.add(option_key)
+
+        for candidate in self._reported_work_mode_values():
+            option_key = normalize_work_mode_option_key(candidate)
+            if option_key is not None:
+                option_keys.add(option_key)
+
+        if not has_explicit_enum_list and option_keys == {"self_use", "mode_scheduler"}:
+            option_keys.update({"feed_in_priority", "backup"})
+        return option_keys
+
+    def _reported_work_mode_values(self) -> tuple[object, ...]:
+        return (
             self.coordinator.data.work_mode,
             self.coordinator.data.detail.get("workMode"),
             self.coordinator.data.detail.get("WorkMode"),
             self.coordinator.data.realtime.get("workMode", {}).get("value"),
             self.coordinator.data.realtime.get("WorkMode", {}).get("value"),
-        ):
-            normalized = _normalize_mode_value(candidate)
-            if normalized is not None:
-                return normalized
-        return None
-
-
-def _normalize_mode_value(value: object) -> str | None:
-    """Map FoxESS work-mode values to the limited HA options."""
-    if not isinstance(value, str):
-        return None
-    return _API_VALUE_TO_OPTION.get(value.strip().replace(" ", "").lower())
+        )

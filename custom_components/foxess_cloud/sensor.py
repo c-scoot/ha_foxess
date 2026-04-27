@@ -595,7 +595,7 @@ class FoxESSSchedulerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sens
             attributes["group_count"] = len(groups)
             attributes["groups"] = groups
         if isinstance(properties, dict):
-            work_mode = properties.get("workmode")
+            work_mode = properties.get("workMode") or properties.get("workmode")
             if isinstance(work_mode, dict):
                 attributes["available_work_modes"] = work_mode.get("enumList")
 

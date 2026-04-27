@@ -13,7 +13,7 @@ Custom Home Assistant integration for FoxESS systems using the official FoxESS c
   - Home load
   - Battery charge, discharge, SOC, temperatures, and related metrics
 - Separates instantaneous power, daily report totals, and cumulative/lifetime counters so similarly named FoxESS values are easier to interpret.
-- Adds writable controls for battery reserve and scheduler enable/disable when the inverter exposes the required APIs.
+- Adds writable controls for battery reserve, work-mode selection, and scheduler enable/disable when the inverter exposes the required APIs.
 - Publishes daily energy counters suitable for Home Assistant long-term statistics and the Energy dashboard.
 
 ## Refresh strategy
@@ -136,7 +136,7 @@ The integration uses the request shapes documented in the official Open API:
 When supported by your inverter, the integration exposes:
 
 - `number` entities for `System Minimum SOC` and `Battery Cut-Off SOC`
-- `select` entity for `Work Mode`, limited to `Self-use` and `Mode Scheduler`
+- `select` entity for `Work Mode`, supporting `Self-use`, `Feed-in Priority`, `Backup`, and `Mode Scheduler` when FoxESS exposes those modes for your inverter
 - `sensor` entities for native net power, including `Battery Net Power`, `Grid Net Power`, and `Non-EPS Load Power`
 - read-only `sensor` entity for `Schedule Status`, showing the current scheduler flag, groups, and available work-mode enums as attributes
 - diagnostic `sensor` entity for `API Calls Today`, disabled by default and reset daily
@@ -147,13 +147,14 @@ When supported by your inverter, the integration exposes:
 The older Open API force-charge window controls are intentionally no longer exposed in Home Assistant, because on newer FoxESS models they are superseded by the full FoxCloud `Mode Scheduler`.
 If you used those entities in older builds, plan to update any dashboards or automations that referenced them.
 
-For the `0.1.0` release, the intended workflow is:
+For the `0.2.0` release, the intended workflow is:
 
 - configure your actual scheduler periods in the FoxESS app
-- use the Home Assistant `Work Mode` select to switch between `Self-use` and `Mode Scheduler`
+- use the Home Assistant `Work Mode` select to switch between `Self-use`, `Feed-in Priority`, `Backup`, and `Mode Scheduler`
 
-This keeps Home Assistant focused on arming or disarming the scheduler without trying to replicate FoxESS' full schedule editor.
+This keeps Home Assistant focused on top-level mode switching without trying to replicate FoxESS' full schedule editor.
 For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler switch-status API rather than by writing `WorkMode=Scheduler`, so the Home Assistant select enables or disables the scheduler directly and uses `WorkMode` only as supporting context.
+`Feed-in Priority` and `Backup` are exposed as best-effort `WorkMode` writes because FoxESS naming varies by inverter family and firmware. If FoxESS reports the scheduler `available_work_modes` list, the Home Assistant select will follow that list; otherwise it falls back to the integration's known work-mode set.
 The `Schedule Status` sensor is intentionally read-only for now and exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
 For dashboards and statistics, prefer the native `Battery Net Power` and `Grid Net Power` sensors over helper-created net-power entities, because the native sensors keep a stable unit definition in the integration.
 `Non-EPS Load Power` is derived as `Load Power - EPS Power`, which matches the FoxESS split between total load, EPS-backed load, and the remainder that is not on the EPS output.

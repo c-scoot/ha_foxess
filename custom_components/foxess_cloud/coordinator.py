@@ -193,6 +193,73 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         await self._async_refresh_work_mode()
         self.async_update_listeners()
 
+    async def async_set_work_mode(self, option_key: str) -> None:
+        """Set a top-level work mode while preserving scheduler compatibility."""
+        current_data = getattr(self, "data", None)
+        scheduler_error: FoxESSApiError | None = None
+        work_mode_error: FoxESSApiError | None = None
+
+        if option_key == "mode_scheduler":
+            try:
+                await self.api.async_set_scheduler_enabled(self.device_sn, True)
+            except FoxESSApiError as err:
+                scheduler_error = err
+            else:
+                await self._async_refresh_work_mode()
+                self.async_update_listeners()
+                return
+
+            try:
+                await self.api.async_set_work_mode(self.device_sn, option_key)
+            except FoxESSApiError as err:
+                work_mode_error = err
+            else:
+                await self._async_refresh_work_mode()
+                self.async_update_listeners()
+                return
+
+            raise UpdateFailed(
+                "Unable to enable Mode Scheduler. "
+                f"Scheduler flag write failed: {scheduler_error}. "
+                f"WorkMode fallback failed: {work_mode_error}."
+            ) from work_mode_error or scheduler_error
+
+        should_try_disable_scheduler = (
+            option_key == "self_use"
+            or self._scheduler_enabled is True
+            or (current_data is not None and current_data.scheduler_enabled is True)
+        )
+        scheduler_disabled = False
+        if should_try_disable_scheduler:
+            try:
+                await self.api.async_set_scheduler_enabled(self.device_sn, False)
+            except FoxESSApiError as err:
+                scheduler_error = err
+            else:
+                scheduler_disabled = True
+
+        try:
+            await self.api.async_set_work_mode(self.device_sn, option_key)
+        except FoxESSApiError as err:
+            work_mode_error = err
+        else:
+            await self._async_refresh_work_mode()
+            self.async_update_listeners()
+            return
+
+        if option_key == "self_use" and scheduler_disabled:
+            await self._async_refresh_work_mode()
+            self.async_update_listeners()
+            return
+
+        if scheduler_error is not None:
+            raise UpdateFailed(
+                f"Unable to set work mode {option_key}: "
+                f"scheduler disable failed ({scheduler_error}) and "
+                f"work-mode write failed ({work_mode_error})."
+            ) from work_mode_error or scheduler_error
+        raise UpdateFailed(f"Unable to set work mode {option_key}: {work_mode_error}") from work_mode_error
+
     async def async_set_battery_soc_settings(
         self,
         *,

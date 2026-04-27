@@ -53,7 +53,20 @@ _PV_PATTERN = re.compile(r"^(pv)(\d+)(power|volt|voltage|current)$", re.IGNORECA
 _PHASE_PATTERN = re.compile(r"^([rst])(volt|current|power|freq)$", re.IGNORECASE)
 _WORK_MODE_SETTING_KEYS: tuple[str, ...] = ("WorkMode", "workMode")
 _WORK_MODE_OPTION_CANDIDATES: dict[str, tuple[str, ...]] = {
-    "self_use": ("SelfUse", "SelfUseMode", "Self Use"),
+    "self_use": ("SelfUse", "SelfUseMode", "Self Use", "Self-use"),
+    "feed_in_priority": (
+        "Feedin",
+        "FeedIn",
+        "FeedinMode",
+        "FeedInMode",
+        "FeedinFirst",
+        "FeedInFirst",
+        "FeedinPriority",
+        "FeedInPriority",
+        "Feed In Priority",
+        "Feed-in Priority",
+    ),
+    "backup": ("Backup", "BackUp", "Back Up", "Back-up"),
     "mode_scheduler": ("ModeScheduler", "Scheduler", "TimeMode", "Mode Scheduler"),
 }
 
@@ -72,6 +85,25 @@ class FoxESSAuthenticationError(FoxESSApiError):
 
 class FoxESSRateLimitError(FoxESSApiError):
     """Raised when the API rate limit is hit."""
+
+
+def _normalize_work_mode_value(value: str) -> str:
+    """Normalize FoxESS work-mode labels across spacing/casing variants."""
+    return value.strip().replace(" ", "").replace("-", "").replace("_", "").lower()
+
+
+def normalize_work_mode_option_key(value: object) -> str | None:
+    """Map a FoxESS work-mode value to one of the integration option keys."""
+    if not isinstance(value, str):
+        return None
+    return _WORK_MODE_VALUE_TO_OPTION_KEY.get(_normalize_work_mode_value(value))
+
+
+_WORK_MODE_VALUE_TO_OPTION_KEY: dict[str, str] = {
+    normalized_candidate: option_key
+    for option_key, candidates in _WORK_MODE_OPTION_CANDIDATES.items()
+    for normalized_candidate in (_normalize_work_mode_value(candidate) for candidate in candidates)
+}
 
 
 @dataclass(slots=True)
