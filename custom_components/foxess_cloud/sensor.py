@@ -547,6 +547,8 @@ class FoxESSSchedulerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sens
     _attr_has_entity_name = True
     _attr_name = "Schedule Status"
     _attr_icon = "mdi:calendar-clock"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: FoxESSDataUpdateCoordinator) -> None:
         super().__init__(coordinator)

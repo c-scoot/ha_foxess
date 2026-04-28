@@ -129,8 +129,14 @@ class FoxESSWorkModeSelect(
         return None
 
     def _available_option_keys(self) -> set[str]:
-        option_keys = {"self_use", "mode_scheduler"}
-        has_explicit_enum_list = False
+        option_keys = {"self_use"}
+        if (
+            self.coordinator.data.scheduler_supported is True
+            or self.coordinator.data.scheduler_enabled is not None
+            or self.coordinator.data.scheduler_snapshot is not None
+        ):
+            option_keys.add("mode_scheduler")
+
         snapshot = self.coordinator.data.scheduler_snapshot
         result = snapshot.get("result") if isinstance(snapshot, dict) else None
         properties = result.get("properties") if isinstance(result, dict) else None
@@ -141,7 +147,6 @@ class FoxESSWorkModeSelect(
         if isinstance(work_mode, dict):
             enum_list = work_mode.get("enumList")
             if isinstance(enum_list, list):
-                has_explicit_enum_list = True
                 for raw_value in enum_list:
                     option_key = normalize_work_mode_option_key(raw_value)
                     if option_key is not None:
@@ -152,8 +157,9 @@ class FoxESSWorkModeSelect(
             if option_key is not None:
                 option_keys.add(option_key)
 
-        if not has_explicit_enum_list and option_keys == {"self_use", "mode_scheduler"}:
-            option_keys.update({"feed_in_priority", "backup"})
+        current_option_key = _OPTION_TO_KEY.get(getattr(self, "_current_option", ""))
+        if current_option_key is not None:
+            option_keys.add(current_option_key)
         return option_keys
 
     def _reported_work_mode_values(self) -> tuple[object, ...]:

@@ -167,6 +167,11 @@ class FoxESSApiClient:
         self._base_url = base_url.rstrip("/")
         self._use_realtime_v1 = True
         self._use_detail_v1 = True
+        self._scheduler_flag_get_request_by_device: dict[str, tuple[str, str]] = {}
+        self._scheduler_flag_set_request_by_device: dict[str, tuple[str, str]] = {}
+        self._scheduler_get_request_by_device: dict[str, tuple[str, str]] = {}
+        self._work_mode_read_key_by_device: dict[str, str] = {}
+        self._work_mode_write_pair_by_device: dict[tuple[str, str], tuple[str, str]] = {}
         self._path_locks: dict[str, asyncio.Lock] = {}
         self._last_request_started: dict[str, float] = {}
         self._usage_by_device: dict[str, FoxESSApiUsageStats] = {}
@@ -689,41 +694,47 @@ class FoxESSApiClient:
 
         last_error: FoxESSApiError | None = None
         attempted_pairs: list[str] = []
-        for key in _WORK_MODE_SETTING_KEYS:
-            for candidate in candidates:
-                attempted_pairs.append(f"{key}={candidate}")
+        pairs = tuple(
+            (key, candidate)
+            for key in _WORK_MODE_SETTING_KEYS
+            for candidate in candidates
+        )
+        cached_pair = self._work_mode_write_pair_by_device.get((device_sn, option_key))
+        for key, candidate in _prefer_cached_option(pairs, cached_pair):
+            attempted_pairs.append(f"{key}={candidate}")
+            _LOGGER.debug(
+                "Trying FoxESS work mode write for %s with key=%s value=%s",
+                device_sn,
+                key,
+                candidate,
+            )
+            try:
+                await self.async_set_device_setting(
+                    device_sn,
+                    key,
+                    candidate,
+                    log_request_errors=False,
+                )
+            except FoxESSApiError as err:
                 _LOGGER.debug(
-                    "Trying FoxESS work mode write for %s with key=%s value=%s",
+                    "FoxESS rejected work mode write for %s with key=%s value=%s errno=%s msg=%s",
                     device_sn,
                     key,
                     candidate,
+                    err.errno,
+                    err,
                 )
-                try:
-                    await self.async_set_device_setting(
-                        device_sn,
-                        key,
-                        candidate,
-                        log_request_errors=False,
-                    )
-                except FoxESSApiError as err:
-                    _LOGGER.debug(
-                        "FoxESS rejected work mode write for %s with key=%s value=%s errno=%s msg=%s",
-                        device_sn,
-                        key,
-                        candidate,
-                        err.errno,
-                        err,
-                    )
-                    last_error = err
-                    continue
+                last_error = err
+                continue
 
-                _LOGGER.info(
-                    "FoxESS accepted work mode write for %s with key=%s value=%s",
-                    device_sn,
-                    key,
-                    candidate,
-                )
-                return candidate
+            self._work_mode_write_pair_by_device[(device_sn, option_key)] = (key, candidate)
+            _LOGGER.info(
+                "FoxESS accepted work mode write for %s with key=%s value=%s",
+                device_sn,
+                key,
+                candidate,
+            )
+            return candidate
 
         attempts = ", ".join(attempted_pairs)
         if last_error is not None:
@@ -736,8 +747,9 @@ class FoxESSApiClient:
     async def async_get_work_mode(self, device_sn: str) -> str | None:
         """Return the current inverter work mode, if exposed."""
         last_error: FoxESSApiError | None = None
+        cached_key = self._work_mode_read_key_by_device.get(device_sn)
 
-        for key in _WORK_MODE_SETTING_KEYS:
+        for key in _prefer_cached_option(_WORK_MODE_SETTING_KEYS, cached_key):
             _LOGGER.debug("Trying FoxESS work mode read for %s with key=%s", device_sn, key)
             try:
                 value = await self.async_get_device_setting(
@@ -766,6 +778,7 @@ class FoxESSApiClient:
                 key,
                 value,
             )
+            self._work_mode_read_key_by_device[device_sn] = key
             return str(value)
 
         if last_error is not None:
@@ -782,14 +795,16 @@ class FoxESSApiClient:
             ("v0", SCHEDULER_GET_FLAG_V0_PATH),
         )
         last_error: FoxESSApiError | None = None
+        cached_request = self._scheduler_flag_get_request_by_device.get(device_sn)
 
-        for version, path in requests:
+        for version, path in _prefer_cached_option(requests, cached_request):
             try:
                 data = await self._request("POST", path, payload={"deviceSN": device_sn}, log_request_errors=False)
             except FoxESSApiError as err:
                 last_error = err
                 continue
 
+            self._scheduler_flag_get_request_by_device[device_sn] = (version, path)
             result = data.get("result") or {}
             if not isinstance(result, dict):
                 return {"version": version, "support": None, "enable": None}
@@ -809,8 +824,9 @@ class FoxESSApiClient:
             ("v0", SCHEDULER_SET_FLAG_V0_PATH),
         )
         last_error: FoxESSApiError | None = None
+        cached_request = self._scheduler_flag_set_request_by_device.get(device_sn)
 
-        for version, path in requests:
+        for version, path in _prefer_cached_option(requests, cached_request):
             try:
                 await self._request(
                     "POST",
@@ -830,6 +846,7 @@ class FoxESSApiClient:
                 last_error = err
                 continue
 
+            self._scheduler_flag_set_request_by_device[device_sn] = (version, path)
             _LOGGER.info(
                 "FoxESS accepted scheduler flag write for %s with version=%s enable=%s",
                 device_sn,
@@ -849,14 +866,16 @@ class FoxESSApiClient:
             ("v0", SCHEDULER_GET_V0_PATH),
         )
         last_error: FoxESSApiError | None = None
+        cached_request = self._scheduler_get_request_by_device.get(device_sn)
 
-        for version, path in requests:
+        for version, path in _prefer_cached_option(requests, cached_request):
             try:
                 data = await self._request("POST", path, payload={"deviceSN": device_sn}, log_request_errors=False)
             except FoxESSApiError as err:
                 last_error = err
                 continue
 
+            self._scheduler_get_request_by_device[device_sn] = (version, path)
             result = data.get("result")
             return {
                 "version": version,
@@ -864,6 +883,7 @@ class FoxESSApiClient:
             }
 
         raise last_error or FoxESSApiError("Unable to read scheduler groups")
+
 
 def normalize_key(key: str) -> str:
     """Normalize API variable names to a stable snake_case key."""
@@ -1022,6 +1042,13 @@ def _coerce_boolish(value: Any) -> bool:
         if normalized in {"false", "off", "no", ""}:
             return False
     return bool(coerced)
+
+
+def _prefer_cached_option(options: tuple[Any, ...], cached: Any | None) -> tuple[Any, ...]:
+    """Return options with the last successful fallback first."""
+    if cached is None or cached not in options:
+        return options
+    return (cached, *(option for option in options if option != cached))
 
 
 def _select_device_result_block(result: Any, device_sn: str) -> dict[str, Any]:

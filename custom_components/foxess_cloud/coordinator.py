@@ -28,8 +28,9 @@ from .const import (
     DEFAULT_SCAN_INTERVAL,
     DETAIL_REFRESH_INTERVAL,
     REPORT_REFRESH_INTERVAL,
+    SCHEDULER_FLAG_REFRESH_INTERVAL,
+    SCHEDULER_SNAPSHOT_REFRESH_INTERVAL,
     SETTINGS_REFRESH_INTERVAL,
-    WORK_MODE_REFRESH_INTERVAL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -84,7 +85,8 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         self._scheduler_enabled: bool | None = None
         self._scheduler_supported: bool | None = None
         self._scheduler_snapshot: dict[str, Any] | None = None
-        self._work_mode_fetched_at: datetime | None = None
+        self._scheduler_flag_fetched_at: datetime | None = None
+        self._scheduler_snapshot_fetched_at: datetime | None = None
 
     async def _async_update_data(self) -> FoxESSCoordinatorData:
         now = dt_util.utcnow()
@@ -125,10 +127,18 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             ):
                 await self._async_refresh_control_settings(now)
             if (
-                self._work_mode_fetched_at is None
-                or now - self._work_mode_fetched_at >= WORK_MODE_REFRESH_INTERVAL
+                self._scheduler_flag_fetched_at is None
+                or now - self._scheduler_flag_fetched_at >= SCHEDULER_FLAG_REFRESH_INTERVAL
             ):
-                await self._async_refresh_work_mode(now)
+                await self._async_refresh_scheduler_flag(now)
+            if (
+                self._scheduler_supported is not False
+                and (
+                    self._scheduler_snapshot_fetched_at is None
+                    or now - self._scheduler_snapshot_fetched_at >= SCHEDULER_SNAPSHOT_REFRESH_INTERVAL
+                )
+            ):
+                await self._async_refresh_scheduler_snapshot(now)
         except FoxESSAuthenticationError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except FoxESSRateLimitError as err:
@@ -166,31 +176,43 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
 
         self._settings_fetched_at = now or dt_util.utcnow()
 
-    async def _async_refresh_work_mode(self, now: datetime | None = None) -> None:
-        """Refresh scheduler/work-mode state more frequently than other settings."""
+    async def _async_refresh_scheduler_flag(self, now: datetime | None = None) -> None:
+        """Refresh the lightweight scheduler support/enabled flag."""
         try:
             scheduler_flag = await self.api.async_get_scheduler_flag(self.device_sn)
             self._scheduler_enabled = scheduler_flag.get("enable")
             self._scheduler_supported = scheduler_flag.get("support")
         except FoxESSApiError as err:
             _LOGGER.debug("Scheduler flag unavailable for %s: %s", self.device_sn, err)
+        self._scheduler_flag_fetched_at = now or dt_util.utcnow()
 
+    async def _async_refresh_scheduler_snapshot(self, now: datetime | None = None) -> None:
+        """Refresh full scheduler metadata, including groups and work-mode enums."""
+        if self._scheduler_supported is False:
+            self._scheduler_snapshot_fetched_at = now or dt_util.utcnow()
+            return
         try:
             self._scheduler_snapshot = await self.api.async_get_scheduler(self.device_sn)
         except FoxESSApiError as err:
             _LOGGER.debug("Scheduler snapshot unavailable for %s: %s", self.device_sn, err)
+        self._scheduler_snapshot_fetched_at = now or dt_util.utcnow()
 
-        try:
-            self._work_mode = await self.api.async_get_work_mode(self.device_sn)
-        except FoxESSApiError as err:
-            _LOGGER.debug("Work mode unavailable for %s: %s", self.device_sn, err)
-            self._work_mode = self._work_mode
-        self._work_mode_fetched_at = now or dt_util.utcnow()
+    async def _async_refresh_scheduler_metadata(
+        self,
+        *,
+        include_snapshot: bool = False,
+    ) -> None:
+        """Refresh scheduler state after a user-triggered write."""
+        await self._async_refresh_scheduler_flag()
+        if include_snapshot:
+            await self._async_refresh_scheduler_snapshot()
 
     async def async_set_scheduler_enabled(self, enabled: bool) -> None:
         """Enable or disable scheduler mode and refresh coordinator state."""
         await self.api.async_set_scheduler_enabled(self.device_sn, enabled)
-        await self._async_refresh_work_mode()
+        self._scheduler_enabled = enabled
+        self._scheduler_supported = True
+        await self._async_refresh_scheduler_metadata(include_snapshot=True)
         self.async_update_listeners()
 
     async def async_set_work_mode(self, option_key: str) -> None:
@@ -205,16 +227,18 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             except FoxESSApiError as err:
                 scheduler_error = err
             else:
-                await self._async_refresh_work_mode()
+                self._scheduler_enabled = True
+                self._scheduler_supported = True
+                await self._async_refresh_scheduler_metadata(include_snapshot=True)
                 self.async_update_listeners()
                 return
 
             try:
-                await self.api.async_set_work_mode(self.device_sn, option_key)
+                self._work_mode = await self.api.async_set_work_mode(self.device_sn, option_key)
             except FoxESSApiError as err:
                 work_mode_error = err
             else:
-                await self._async_refresh_work_mode()
+                await self._async_refresh_scheduler_metadata()
                 self.async_update_listeners()
                 return
 
@@ -237,18 +261,20 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
                 scheduler_error = err
             else:
                 scheduler_disabled = True
+                self._scheduler_enabled = False
+                self._scheduler_supported = True
 
-        try:
-            await self.api.async_set_work_mode(self.device_sn, option_key)
-        except FoxESSApiError as err:
-            work_mode_error = err
-        else:
-            await self._async_refresh_work_mode()
+        if option_key == "self_use" and scheduler_disabled:
+            await self._async_refresh_scheduler_metadata()
             self.async_update_listeners()
             return
 
-        if option_key == "self_use" and scheduler_disabled:
-            await self._async_refresh_work_mode()
+        try:
+            self._work_mode = await self.api.async_set_work_mode(self.device_sn, option_key)
+        except FoxESSApiError as err:
+            work_mode_error = err
+        else:
+            await self._async_refresh_scheduler_metadata()
             self.async_update_listeners()
             return
 

@@ -27,11 +27,16 @@ The integration is aligned to the published FoxESS Open API limits:
 To stay comfortably within those limits, the integration uses:
 
 - real-time polling every 5 minutes
-- report polling every 5 minutes
+- report polling every 15 minutes
 - device detail refresh every 6 hours
 - writable-settings refresh every 6 hours
+- scheduler flag refresh every 30 minutes
+- full scheduler snapshot refresh every 6 hours, plus immediately after scheduler writes
 
 The client also throttles requests per API path, so startup, multi-inverter accounts, and write operations respect the documented 1-second and 2-second endpoint limits.
+It remembers the working scheduler API version and work-mode write format per inverter, so fallback probes are not repeated on every refresh once a path succeeds.
+Direct `WorkMode` reads are not polled on the normal refresh loop; the selector infers state from the scheduler flag, scheduler metadata, realtime/detail payloads, restored Home Assistant state, and successful writes.
+After endpoint caches settle, the typical scheduled baseline is about 448 calls per inverter per day before manual writes.
 
 FoxESS does not publish a per-variable cadence table in the Open API docs, but the real-time API does return a `time` field for each value. The integration carries that through as a `data_updated_at` attribute so you can see when FoxESS actually last refreshed a metric, rather than assuming every poll produced a new sample.
 
@@ -138,7 +143,7 @@ When supported by your inverter, the integration exposes:
 - `number` entities for `System Minimum SOC` and `Battery Cut-Off SOC`
 - `select` entity for `Work Mode`, supporting `Self-use`, `Feed-in Priority`, `Backup`, and `Mode Scheduler` when FoxESS exposes those modes for your inverter
 - `sensor` entities for native net power, including `Battery Net Power`, `Grid Net Power`, and `Non-EPS Load Power`
-- read-only `sensor` entity for `Schedule Status`, showing the current scheduler flag, groups, and available work-mode enums as attributes
+- disabled-by-default read-only `sensor` entity for `Schedule Status`, showing the current scheduler flag, groups, and available work-mode enums as attributes
 - diagnostic `sensor` entity for `API Calls Today`, disabled by default and reset daily
 
 - `System Minimum SOC` maps to FoxESS `minSoc`, the system-wide minimum reserve.
@@ -147,15 +152,15 @@ When supported by your inverter, the integration exposes:
 The older Open API force-charge window controls are intentionally no longer exposed in Home Assistant, because on newer FoxESS models they are superseded by the full FoxCloud `Mode Scheduler`.
 If you used those entities in older builds, plan to update any dashboards or automations that referenced them.
 
-For the `0.2.0` release, the intended workflow is:
+For the `0.3.0-dev1` release, the intended workflow is:
 
 - configure your actual scheduler periods in the FoxESS app
 - use the Home Assistant `Work Mode` select to switch between `Self-use`, `Feed-in Priority`, `Backup`, and `Mode Scheduler`
 
 This keeps Home Assistant focused on top-level mode switching without trying to replicate FoxESS' full schedule editor.
 For newer FoxESS models, `Mode Scheduler` is controlled through the scheduler switch-status API rather than by writing `WorkMode=Scheduler`, so the Home Assistant select enables or disables the scheduler directly and uses `WorkMode` only as supporting context.
-`Feed-in Priority` and `Backup` are exposed as best-effort `WorkMode` writes because FoxESS naming varies by inverter family and firmware. If FoxESS reports the scheduler `available_work_modes` list, the Home Assistant select will follow that list; otherwise it falls back to the integration's known work-mode set.
-The `Schedule Status` sensor is intentionally read-only for now and exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
+`Feed-in Priority` and `Backup` are exposed only when FoxESS advertises them, reports them, or Home Assistant restores a previously selected value. The integration still uses best-effort `WorkMode` write fallbacks for exposed modes because FoxESS naming varies by inverter family and firmware.
+The `Schedule Status` sensor is intentionally read-only and disabled by default. It exists to make the current FoxESS schedule visible in Home Assistant without exposing unsafe partial-edit behavior.
 For dashboards and statistics, prefer the native `Battery Net Power` and `Grid Net Power` sensors over helper-created net-power entities, because the native sensors keep a stable unit definition in the integration.
 `Non-EPS Load Power` is derived as `Load Power - EPS Power`, which matches the FoxESS split between total load, EPS-backed load, and the remainder that is not on the EPS output.
 `API Calls Today` counts outbound FoxESS requests for that inverter, resets on the integration side each local day, and is intended as a disabled-by-default diagnostic sensor rather than a primary dashboard entity.
