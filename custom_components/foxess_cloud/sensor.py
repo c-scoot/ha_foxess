@@ -905,10 +905,22 @@ class FoxESSPVStringEnergySensor(
     def _handle_coordinator_update(self) -> None:
         """Update the cumulative total from the latest power sample."""
         current_power_kw = self._get_current_power_kw()
-        current_sample_at = self.coordinator.data.requested_at
+        current_sample_at = self._get_current_sample_at()
 
         if self._daily:
-            self._maybe_reset_for_new_day(current_sample_at)
+            self._maybe_reset_for_new_day(self.coordinator.data.requested_at)
+
+        if current_sample_at is None:
+            self._last_power_kw = current_power_kw
+            self._last_sample_at = None
+            super()._handle_coordinator_update()
+            return
+
+        if self._last_sample_at is not None and current_sample_at <= self._last_sample_at:
+            if current_power_kw is not None:
+                self._last_power_kw = current_power_kw
+            super()._handle_coordinator_update()
+            return
 
         if (
             current_power_kw is not None
@@ -941,14 +953,24 @@ class FoxESSPVStringEnergySensor(
 
         return power_kw if power_kw >= 0 else 0.0
 
+    def _get_current_sample_at(self) -> datetime | None:
+        """Return the source timestamp for the current power sample."""
+        item = self.coordinator.data.realtime.get(self._source_key)
+        raw_time = item.get("time") if item is not None else None
+        parsed_time = _coerce_sample_timestamp(raw_time)
+        if parsed_time is not None:
+            return parsed_time
+        if raw_time not in (None, ""):
+            return None
+        return self.coordinator.data.requested_at
+
     def _reset_integration_window(self) -> None:
         """Start a new integration window from the current coordinator sample."""
         if self._daily:
             self._last_reset_day = self._current_local_day()
         self._last_power_kw = self._get_current_power_kw()
-        self._last_sample_at = (
-            self.coordinator.data.requested_at if self._last_power_kw is not None else None
-        )
+        current_sample_at = self._get_current_sample_at()
+        self._last_sample_at = current_sample_at if self._last_power_kw is not None else None
 
     def _maybe_reset_for_new_day(self, current_sample_at: datetime) -> None:
         """Reset the daily counter when the local day rolls over."""
@@ -1044,6 +1066,50 @@ def _coerce_running_state_code(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_sample_timestamp(value: Any) -> datetime | None:
+    """Convert a FoxESS realtime sample timestamp into UTC."""
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return dt_util.as_utc(value.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE))
+        return dt_util.as_utc(value)
+
+    if isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 1_000_000_000_000:
+            timestamp /= 1000
+        try:
+            return datetime.fromtimestamp(timestamp, tz=dt_util.UTC)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    if not isinstance(value, str):
+        return None
+
+    stripped = value.strip()
+    if not stripped:
+        return None
+
+    if stripped.isdigit():
+        return _coerce_sample_timestamp(int(stripped))
+
+    parsed = dt_util.parse_datetime(stripped)
+    if parsed is None:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+            try:
+                parsed = datetime.strptime(stripped, fmt)
+            except ValueError:
+                continue
+            break
+
+    if parsed is None:
+        return None
+
+    local_tz = dt_util.DEFAULT_TIME_ZONE or dt_util.UTC
+    if parsed.tzinfo is None:
+        return dt_util.as_utc(parsed.replace(tzinfo=local_tz))
+    return dt_util.as_utc(parsed)
 
 
 def _translate_running_state(value: Any) -> str | Any:

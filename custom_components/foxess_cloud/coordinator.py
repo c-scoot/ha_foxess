@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time as dt_time
+from datetime import date, datetime, time as dt_time
 import logging
 from typing import Any
 
@@ -79,6 +79,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         self._report: dict[str, dict[str, Any]] = {}
         self._detail_fetched_at: datetime | None = None
         self._report_fetched_at: datetime | None = None
+        self._report_target_date: date | None = None
         self._battery_settings: FoxESSBatterySocSettings | None = None
         self._charge_time_settings: FoxESSChargeTimeSettings | None = None
         self._settings_fetched_at: datetime | None = None
@@ -92,6 +93,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
 
     async def _async_update_data(self) -> FoxESSCoordinatorData:
         now = dt_util.utcnow()
+        report_date = dt_util.now().date()
 
         try:
             if (
@@ -116,13 +118,15 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             if (
                 not self._report
                 or self._report_fetched_at is None
+                or self._report_target_date != report_date
                 or now - self._report_fetched_at >= REPORT_REFRESH_INTERVAL
             ):
                 self._report = await self.api.async_get_daily_report(
                     self.device_sn,
-                    dt_util.now().date(),
+                    report_date,
                 )
                 self._report_fetched_at = now
+                self._report_target_date = report_date
             if (
                 self._settings_fetched_at is None
                 or now - self._settings_fetched_at >= SETTINGS_REFRESH_INTERVAL
@@ -235,6 +239,32 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         if include_snapshot:
             await self._async_refresh_scheduler_snapshot()
 
+    async def _async_restore_scheduler_after_failed_work_mode_write(
+        self,
+        *,
+        restore_scheduler: bool,
+    ) -> FoxESSApiError | None:
+        """Recover scheduler state after a failed work-mode write."""
+        rollback_error: FoxESSApiError | None = None
+        if restore_scheduler:
+            try:
+                await self.api.async_set_scheduler_enabled(self.device_sn, True)
+            except FoxESSApiError as err:
+                rollback_error = err
+                _LOGGER.warning(
+                    "Unable to restore scheduler mode after failed work-mode write for %s: %s",
+                    self.device_sn,
+                    err,
+                )
+            else:
+                self._scheduler_enabled = True
+                self._scheduler_supported = True
+
+        await self._async_refresh_scheduler_metadata()
+        await self._async_refresh_work_mode()
+        self.async_update_listeners()
+        return rollback_error
+
     async def async_set_scheduler_enabled(self, enabled: bool) -> None:
         """Enable or disable scheduler mode and refresh coordinator state."""
         await self.api.async_set_scheduler_enabled(self.device_sn, enabled)
@@ -249,6 +279,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         current_data = getattr(self, "data", None)
         scheduler_error: FoxESSApiError | None = None
         work_mode_error: FoxESSApiError | None = None
+        rollback_error: FoxESSApiError | None = None
         current_work_mode_key = next(
             (
                 normalized_key
@@ -262,6 +293,11 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
                 if normalized_key is not None
             ),
             None,
+        )
+        scheduler_was_enabled = (
+            self._scheduler_enabled is True
+            or (current_data is not None and current_data.scheduler_enabled is True)
+            or current_work_mode_key == "mode_scheduler"
         )
 
         if option_key == "mode_scheduler":
@@ -295,16 +331,16 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
 
         should_try_disable_scheduler = (
             option_key == "self_use"
-            or self._scheduler_enabled is True
-            or (current_data is not None and current_data.scheduler_enabled is True)
-            or current_work_mode_key == "mode_scheduler"
+            or scheduler_was_enabled
         )
+        scheduler_disable_succeeded = False
         if should_try_disable_scheduler:
             try:
                 await self.api.async_set_scheduler_enabled(self.device_sn, False)
             except FoxESSApiError as err:
                 scheduler_error = err
             else:
+                scheduler_disable_succeeded = True
                 self._scheduler_enabled = False
                 self._scheduler_supported = True
 
@@ -318,13 +354,25 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             self.async_update_listeners()
             return
 
+        if scheduler_disable_succeeded:
+            rollback_error = await self._async_restore_scheduler_after_failed_work_mode_write(
+                restore_scheduler=scheduler_was_enabled,
+            )
+
         if scheduler_error is not None:
-            raise UpdateFailed(
+            message = (
                 f"Unable to set work mode {option_key}: "
                 f"scheduler disable failed ({scheduler_error}) and "
                 f"work-mode write failed ({work_mode_error})."
-            ) from work_mode_error or scheduler_error
-        raise UpdateFailed(f"Unable to set work mode {option_key}: {work_mode_error}") from work_mode_error
+            )
+            if rollback_error is not None:
+                message += f" Scheduler rollback also failed ({rollback_error})."
+            raise UpdateFailed(message) from work_mode_error or scheduler_error
+
+        message = f"Unable to set work mode {option_key}: {work_mode_error}"
+        if rollback_error is not None:
+            message += f" Scheduler rollback failed ({rollback_error})."
+        raise UpdateFailed(message) from work_mode_error
 
     async def async_set_battery_soc_settings(
         self,

@@ -45,6 +45,8 @@ For non-trivial changes, leave a short plan in the work log, commit message, or 
 - Treat rate-limit and daily call-budget impact as part of the design, not an afterthought.
 - Keep long-term statistics semantics correct. Daily counters, total counters, and instantaneous power values must not be blurred together.
 - Make write paths safe and predictable. Successful writes should refresh or invalidate related cached state promptly.
+- If a change requires a preparatory state mutation, make it rollback-safe or order operations so failed writes do not leave the inverter in a new mode.
+- If FoxESS payload ownership is ambiguous, fail safe. Prefer returning unavailable or raising a handled error over guessing which inverter a payload belongs to.
 - Preserve graceful behavior when FoxESS omits fields, changes naming, or returns partial data.
 - Do not broaden scope with opportunistic refactors unless they directly reduce risk in the current task.
 
@@ -54,6 +56,7 @@ For non-trivial changes, leave a short plan in the work log, commit message, or 
 - Put refresh cadence, merge logic, and post-write refresh behavior in `coordinator.py`.
 - Keep entity files focused on Home Assistant entity behavior, naming, attributes, and derived values.
 - Prefer small helpers over deeply inlined logic when handling FoxESS naming variants or scheduler/work-mode fallbacks.
+- For derived energy or statistics logic, use source timestamps when available and do not treat repeated stale samples as fresh production.
 - Preserve backward compatibility for entity IDs, service names, and dashboard-facing behavior whenever practical.
 - Add brief comments only for non-obvious FoxESS quirks, derived calculations, or fallback reasoning.
 
@@ -69,6 +72,8 @@ For non-trivial changes, leave a short plan in the work log, commit message, or 
 - Prefer automated tests for normalization logic, rate-limit handling, scheduler/work-mode behavior, derived sensor math, and coordinator refresh decisions.
 - If there is no existing test harness for the affected area, it is acceptable to add a small targeted one rather than relying only on manual checks.
 - At minimum, run a syntax or import-level validation for touched Python files.
+- For changes touching daily reports, timestamps, scheduler state, or derived energy sensors, include rollover, stale-sample, and failed-write recovery scenarios in validation.
+- If `python` or `py` is unavailable on PATH, use the bundled workspace Python runtime for syntax or import validation rather than skipping checks.
 - For behavior changes, record a manual verification checklist covering the exact user-visible path that changed.
 - If testing is partial, say exactly what was verified and what was not.
 

@@ -230,7 +230,8 @@ class FoxESSApiClient:
 
         try:
             data = await response.json(content_type=None)
-        except aiohttp.ContentTypeError as err:
+        except (aiohttp.ContentTypeError, ValueError) as err:
+            self._record_request_error(device_sn)
             text = await response.text()
             if response.status == 200 and text.strip() == "":
                 _LOGGER.debug("FoxESS response %s %s status=%s empty-json-body", method, path, response.status)
@@ -500,6 +501,10 @@ class FoxESSApiClient:
 
         result = data.get("result") or []
         block = _select_device_result_block(result, device_sn)
+        if not block:
+            raise FoxESSApiError(
+                f"FoxESS realtime response did not include requested device: {device_sn}"
+            )
         variables: dict[str, dict[str, Any]] = {}
 
         for item in block.get("datas", []):
@@ -1054,20 +1059,24 @@ def _prefer_cached_option(options: tuple[Any, ...], cached: Any | None) -> tuple
 def _select_device_result_block(result: Any, device_sn: str) -> dict[str, Any]:
     """Select the result block that belongs to the requested inverter."""
     if isinstance(result, dict):
-        return result
+        result_sn = result.get("deviceSN") or result.get("sn") or result.get("deviceSn")
+        if result_sn in {None, device_sn}:
+            return result
+        return {}
 
     if not isinstance(result, list):
         return {}
 
-    for item in result:
-        if not isinstance(item, dict):
-            continue
+    dict_items = [item for item in result if isinstance(item, dict)]
+    if len(dict_items) == 1:
+        result_sn = dict_items[0].get("deviceSN") or dict_items[0].get("sn") or dict_items[0].get("deviceSn")
+        if result_sn in {None, device_sn}:
+            return dict_items[0]
+        return {}
+
+    for item in dict_items:
         result_sn = item.get("deviceSN") or item.get("sn") or item.get("deviceSn")
         if result_sn == device_sn:
-            return item
-
-    for item in result:
-        if isinstance(item, dict):
             return item
 
     return {}
