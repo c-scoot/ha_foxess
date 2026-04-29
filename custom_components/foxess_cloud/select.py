@@ -101,7 +101,7 @@ class FoxESSWorkModeSelect(
 
     @property
     def current_option(self) -> str | None:
-        return self._current_option or self._infer_current_option()
+        return self._infer_current_option() or self._current_option
 
     async def async_select_option(self, option: str) -> None:
         option_key = _OPTION_TO_KEY.get(option)
@@ -118,12 +118,20 @@ class FoxESSWorkModeSelect(
         super()._handle_coordinator_update()
 
     def _infer_current_option(self) -> str | None:
+        direct_work_mode = normalize_work_mode_option_key(self.coordinator.data.work_mode)
+        if direct_work_mode is not None:
+            return _OPTION_KEY_TO_OPTION[direct_work_mode]
+
         if self.coordinator.data.scheduler_enabled is True:
             return OPTION_MODE_SCHEDULER
 
-        for candidate in self._reported_work_mode_values():
+        for candidate in self._reported_work_mode_values()[1:]:
             option_key = normalize_work_mode_option_key(candidate)
-            if option_key is None or option_key == "mode_scheduler":
+            if option_key is None:
+                continue
+            if option_key == "mode_scheduler":
+                if self.coordinator.data.scheduler_enabled is not False:
+                    return OPTION_MODE_SCHEDULER
                 continue
             return _OPTION_KEY_TO_OPTION[option_key]
         return None

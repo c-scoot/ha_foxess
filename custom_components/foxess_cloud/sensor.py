@@ -33,7 +33,7 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
-from .api import normalize_key, prettify_key
+from .api import normalize_key, normalize_work_mode_option_key, prettify_key
 from .const import DOMAIN
 from .coordinator import FoxESSDataUpdateCoordinator
 
@@ -567,6 +567,12 @@ class FoxESSSchedulerSensor(CoordinatorEntity[FoxESSDataUpdateCoordinator], Sens
 
     @property
     def native_value(self) -> str | None:
+        current_work_mode = normalize_work_mode_option_key(self.coordinator.data.work_mode)
+        if current_work_mode == "mode_scheduler":
+            return "enabled"
+        if current_work_mode is not None:
+            return "disabled"
+
         enabled = self.coordinator.data.scheduler_enabled
         if enabled is True:
             return "enabled"

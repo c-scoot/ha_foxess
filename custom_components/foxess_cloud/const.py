@@ -31,7 +31,7 @@ DEFAULT_SCAN_INTERVAL: Final = timedelta(minutes=5)
 REPORT_REFRESH_INTERVAL: Final = timedelta(minutes=15)
 DETAIL_REFRESH_INTERVAL: Final = timedelta(hours=6)
 SETTINGS_REFRESH_INTERVAL: Final = timedelta(hours=6)
-SCHEDULER_FLAG_REFRESH_INTERVAL: Final = timedelta(minutes=30)
+WORK_MODE_REFRESH_INTERVAL: Final = timedelta(minutes=5)
 SCHEDULER_SNAPSHOT_REFRESH_INTERVAL: Final = timedelta(hours=6)
 REQUEST_TIMEOUT_SECONDS: Final = 30
 QUERY_REQUEST_MIN_INTERVAL_SECONDS: Final = 1.05
