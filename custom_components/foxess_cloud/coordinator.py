@@ -76,6 +76,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         self.device_sn = device.device_sn
         self.device_name = device.name or device.station_name or device.device_sn
         self._detail: dict[str, Any] = {}
+        self._realtime: dict[str, dict[str, Any]] = {}
         self._report: dict[str, dict[str, Any]] = {}
         self._detail_fetched_at: datetime | None = None
         self._report_fetched_at: datetime | None = None
@@ -115,6 +116,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
                     self._detail_fetched_at = now
 
             realtime = await self.api.async_get_realtime(self.device_sn)
+            self._realtime = realtime
             if (
                 not self._report
                 or self._report_fetched_at is None
@@ -154,9 +156,22 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         except FoxESSApiError as err:
             raise UpdateFailed(str(err)) from err
 
+        return self._build_coordinator_data(requested_at=now)
+
+    def _build_coordinator_data(
+        self,
+        *,
+        requested_at: datetime | None = None,
+    ) -> FoxESSCoordinatorData:
+        """Build a coordinator snapshot from the latest cached state."""
+        current_data = getattr(self, "data", None)
+        snapshot_time = requested_at
+        if snapshot_time is None:
+            snapshot_time = current_data.requested_at if current_data is not None else dt_util.utcnow()
+
         return FoxESSCoordinatorData(
             detail=self._detail,
-            realtime=realtime,
+            realtime=self._realtime,
             report=self._report,
             battery_settings=self._battery_settings,
             charge_time_settings=self._charge_time_settings,
@@ -165,8 +180,12 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             scheduler_supported=self._scheduler_supported,
             scheduler_snapshot=self._scheduler_snapshot,
             api_usage=self.api.get_daily_usage(self.device_sn),
-            requested_at=now,
+            requested_at=snapshot_time,
         )
+
+    def _publish_cached_state(self) -> None:
+        """Publish cached coordinator state without fabricating new realtime samples."""
+        self.async_set_updated_data(self._build_coordinator_data())
 
     async def _async_refresh_control_settings(self, now: datetime | None = None) -> None:
         """Refresh slower-changing writable settings."""
@@ -194,6 +213,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         try:
             self._work_mode = await self.api.async_get_work_mode(self.device_sn)
         except FoxESSApiError as err:
+            self._work_mode = None
             _LOGGER.debug("Work mode unavailable for %s: %s", self.device_sn, err)
         else:
             if expected_option_key is not None:
@@ -215,6 +235,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             self._scheduler_enabled = scheduler_flag.get("enable")
             self._scheduler_supported = scheduler_flag.get("support")
         except FoxESSApiError as err:
+            self._scheduler_enabled = None
             _LOGGER.debug("Scheduler flag unavailable for %s: %s", self.device_sn, err)
         self._scheduler_flag_fetched_at = now or dt_util.utcnow()
 
@@ -262,7 +283,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
 
         await self._async_refresh_scheduler_metadata()
         await self._async_refresh_work_mode()
-        self.async_update_listeners()
+        self._publish_cached_state()
         return rollback_error
 
     async def async_set_scheduler_enabled(self, enabled: bool) -> None:
@@ -272,7 +293,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         self._scheduler_supported = True
         await self._async_refresh_scheduler_metadata(include_snapshot=True)
         await self._async_refresh_work_mode()
-        self.async_update_listeners()
+        self._publish_cached_state()
 
     async def async_set_work_mode(self, option_key: str) -> None:
         """Set a top-level work mode while preserving scheduler compatibility."""
@@ -310,7 +331,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
                 self._scheduler_supported = True
                 await self._async_refresh_scheduler_metadata(include_snapshot=True)
                 await self._async_refresh_work_mode()
-                self.async_update_listeners()
+                self._publish_cached_state()
                 return
 
             try:
@@ -320,7 +341,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             else:
                 await self._async_refresh_scheduler_metadata()
                 await self._async_refresh_work_mode(expected_option_key=option_key)
-                self.async_update_listeners()
+                self._publish_cached_state()
                 return
 
             raise UpdateFailed(
@@ -351,7 +372,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
         else:
             await self._async_refresh_scheduler_metadata()
             await self._async_refresh_work_mode(expected_option_key=option_key)
-            self.async_update_listeners()
+            self._publish_cached_state()
             return
 
         if scheduler_disable_succeeded:
@@ -393,7 +414,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             ),
         )
         await self._async_refresh_control_settings()
-        self.async_update_listeners()
+        self._publish_cached_state()
 
     async def async_set_charge_from_grid(self, period: int, enabled: bool) -> None:
         """Enable or disable charging from grid for a force-charge time period."""
@@ -438,7 +459,7 @@ class FoxESSDataUpdateCoordinator(DataUpdateCoordinator[FoxESSCoordinatorData]):
             target.end = end
         await self.api.async_set_charge_time_settings(self.device_sn, settings)
         await self._async_refresh_control_settings()
-        self.async_update_listeners()
+        self._publish_cached_state()
 
 
 def _copy_charge_settings(
